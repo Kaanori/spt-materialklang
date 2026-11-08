@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Materialklang - Client-Plugin (BepInEx), SPT 4.1.6.
+       Bauen:                dotnet build -c Release
+       Bauen + installieren: dotnet build -c Release -p:Installieren=true
+       (ohne den Schalter wird NICHTS ins Spiel kopiert)
+       Gebaut wird gegen die Spiel-DLLs UND gegen die DLLs der installierten Mods
+       Sound Engine Backport und SAIN (nur zum Bauen; zur Laufzeit sind beide optional). -->
+
+  <PropertyGroup>
+    <TargetFramework>net471</TargetFramework>
+    <AssemblyName>Materialklang</AssemblyName>
+    <RootNamespace>Materialklang</RootNamespace>
+    <Version>0.5.0-beta</Version>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AssemblyTitle>Materialklang (Material Sound)</AssemblyTitle>
+    <Description>Materialklang - material-dependent sound occlusion, timbre and reverb for SPT 4.1 (add-on for Sound Engine Backport)</Description>
+    <GameDir Condition="'$(GameDir)' == ''">/mnt/nvmegames/Games/SPT-416</GameDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BepInEx.AssemblyPublicizer.MSBuild" Version="0.4.2" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="src/**/*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Alles liegt schon im Spiel - nichts davon mitkopieren (Private=false). -->
+    <Reference Include="Assembly-CSharp" Publicize="true"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.PhysicsModule"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/UnityEngine.PhysicsModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.TerrainPhysicsModule"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/UnityEngine.TerrainPhysicsModule.dll</HintPath><Private>false</Private></Reference>
+    <!-- Mod-DLLs: nur zum Bauen. Zur Laufzeit sind SEB und SAIN optional (BepInDependency SoftDependency). -->
+    <Reference Include="SAIN" Publicize="true"><HintPath>$(GameDir)/BepInEx/plugins/SAIN/SAIN.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SAIN.Preset.Shared"><HintPath>$(GameDir)/BepInEx/plugins/SAIN/SAIN.Preset.Shared.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Meta.XR.Audio" Publicize="true"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/Meta.XR.Audio.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SoundEngineBackportClient" Publicize="true"><HintPath>$(GameDir)/BepInEx/plugins/SoundEngineBackport/SoundEngineBackportClient.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Comfort"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/Comfort.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="BepInEx"><HintPath>$(GameDir)/BepInEx/core/BepInEx.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(GameDir)/BepInEx/core/0Harmony.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+
+  <!-- Nur mit -p:Installieren=true ins Spiel kopieren - sonst ueberschreibt schon ein Probebau die installierte DLL. -->
+  <Target Name="InsSpiel" AfterTargets="Build" Condition="'$(Installieren)' == 'true'">
+    <MakeDir Directories="$(GameDir)/BepInEx/plugins/Materialklang" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(GameDir)/BepInEx/plugins/Materialklang" />
+    <Message Importance="high" Text="-> $(GameDir)/BepInEx/plugins/Materialklang/Materialklang.dll (Spiel neu starten)" />
+  </Target>
+  <Target Name="NichtInstalliert" AfterTargets="Build" Condition="'$(Installieren)' != 'true'">
+    <Message Importance="high" Text="Gebaut: $(TargetPath) - NICHT installiert (dafuer: -p:Installieren=true)" />
+  </Target>
+
+</Project>

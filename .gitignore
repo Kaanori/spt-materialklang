@@ -1,0 +1,12 @@
+bin/
+obj/
+*.dll
+*.pdb
+*.user
+*.vor-*
+*.sicherung-*
+*.log
+dist/
+.vs/
+.idea/
+.vscode/

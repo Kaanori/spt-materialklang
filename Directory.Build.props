@@ -1,0 +1,50 @@
+<Project>
+
+  <!-- ===================================================================
+       Single place for the game folder.
+
+       MSBuild reads this file automatically before any .csproj,
+       however deep in the tree it is. So the path to the game only has
+       to be right ONCE, not in forty project files.
+
+       Order (the first one that is set wins):
+         1. -p:SpielOrdner=/path/to/game   on the command line
+         2. environment variable SPT_DIR (or the older SPT_ORDNER)
+         3. the default below - ADJUST THIS ONE
+            (Windows: C:/SPT, Linux: /mnt/nvmegames/Games/SPT-416)
+
+       For historical reasons the mods use different names for the same
+       path (SpielOrdner, GameDir) and for the server part (ServerDir,
+       SptDir). All four are filled from one source here.
+       ("SpielOrdner" is German for "game folder".)
+
+       Server folder: SPT 4.1 keeps the server in <game folder>/SPT_Runtime
+       on Windows AND Linux - the official release archive
+       (SPT-4.1.6-40743-*.7z) ships SPT.Server.exe, SPT.Server.Linux and
+       SPT.Launcher.exe side by side in SPT_Runtime/, and server mods go to
+       SPT_Runtime/user/mods/. (SPT 4.0 used a folder called "SPT"; those
+       installs are not compatible with these mods anyway.)
+       =================================================================== -->
+
+  <PropertyGroup>
+    <SpielOrdner Condition="'$(SpielOrdner)' == '' and '$(SPT_DIR)' != ''">$(SPT_DIR)</SpielOrdner>
+    <SpielOrdner Condition="'$(SpielOrdner)' == '' and '$(SPT_ORDNER)' != ''">$(SPT_ORDNER)</SpielOrdner>
+    <SpielOrdner Condition="'$(SpielOrdner)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">C:/SPT</SpielOrdner>
+    <SpielOrdner Condition="'$(SpielOrdner)' == ''">/mnt/nvmegames/Games/SPT-416</SpielOrdner>
+
+    <GameDir   Condition="'$(GameDir)'   == ''">$(SpielOrdner)</GameDir>
+    <ServerDir Condition="'$(ServerDir)' == ''">$(SpielOrdner)/SPT_Runtime</ServerDir>
+    <SptDir    Condition="'$(SptDir)'    == ''">$(SpielOrdner)/SPT_Runtime</SptDir>
+  </PropertyGroup>
+
+  <!-- Fail early and clearly if the path is wrong.
+       Otherwise all you get later is a wall of "type not found". -->
+  <Target Name="SpielOrdnerPruefen" BeforeTargets="BeforeBuild">
+    <Error Condition="!Exists('$(SpielOrdner)')"
+           Text="Game folder not found: $(SpielOrdner) - adjust it in Directory.Build.props or set SPT_DIR (see INSTALLATION.md)." />
+    <!-- Server mods (net10.0) need the server folder for their references. -->
+    <Error Condition="'$(TargetFramework)' == 'net10.0' and !Exists('$(ServerDir)')"
+           Text="SPT server folder not found: $(ServerDir) - SPT 4.1 keeps it in &lt;game folder&gt;/SPT_Runtime (Windows and Linux alike). Is SPT 4.1 installed in $(SpielOrdner)?" />
+  </Target>
+
+</Project>
