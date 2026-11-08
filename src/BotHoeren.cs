@@ -136,6 +136,8 @@ namespace Materialklang
             if (budgetRest <= 0) { f = da ? Grenzen(e.faktor) : 1f; return da; }
             budgetRest--;
 
+            // Exponent 0.5: Energie -> Amplitude; bei kugelfoermiger Ausbreitung (p ~ 1/r) skaliert die Hoerweite mit
+            // dem Amplitudenfaktor (Abstandsgesetz, -6 dB je Abstandsverdopplung; z.B. Bies & Hansen).
             float roh = Mathf.Pow(Durchgang(kQuelle, kOhr), Exponent.Value);
             cache[key] = new Eintrag { q = kQuelle, o = kOhr, zeit = jetzt, faktor = roh };
             f = Grenzen(roh);

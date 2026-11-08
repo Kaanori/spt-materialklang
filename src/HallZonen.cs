@@ -36,6 +36,7 @@ namespace Materialklang
         internal static ConfigEntry<bool> Diagnose;
 
         // Absorptionsgrad je Materialname und Frequenz, Paare (Hz, alpha). Quelle: BSGs ungenutzte Zuordnung
+        // (Spieldaten, Herkunft von BSG nicht dokumentiert; mehrere Zeilen gleichen klassischen Lehrbuchtabellen)
         // (26 Materialien, Namen = EFT-MaterialType). Alles Unbekannte faellt auf Stone zurueck.
         static readonly Dictionary<string, float[]> Tabelle = new Dictionary<string, float[]>
         {
@@ -334,6 +335,11 @@ namespace Materialklang
         // ---------------------------------------------------------------- Rechnen + Zonen
 
         // Sabine-Korrektur gegenueber dem eingebackenen alpha 0.1.
+        // Quelle: Sabine T60 = 0.161*V/(S*alpha) (SI-Form; W. C. Sabine, Collected Papers on Acoustics, 1922;
+        // H. Kuttruff, Room Acoustics, 6. Aufl., CRC 2017). Fuer stark daempfende Raeume waere Eyring genauer
+        // (C. F. Eyring, JASA 1, 217-241, 1930) - hier nicht verwendet.
+        // Hallpegel: diffuses Feld ~ 10*log10(4/(S*alpha)) -> Differenz 10*log10(0.1/alpha) (Kuttruff; Bies & Hansen).
+        // Grenzen -0.8..+1.5 s und +-6 dB sind Annahmen (nach Gehoer).
         static void Korrektur(RaumDaten d, float staerke, float[] dRt, float[] dPegel)
         {
             for (int b = 0; b < Baender.Length; b++)

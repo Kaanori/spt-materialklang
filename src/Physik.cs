@@ -21,8 +21,11 @@ namespace Materialklang
         internal static readonly ConfigEntry<float>[] Massiv = new ConfigEntry<float>[Plugin.AnzahlGruppen];
 
         // kg/m^3 (Gitter/Zaun/Gras = offen -> 0). Reihenfolge wie Gruppe.
+        // Quelle: uebliche Tabellenwerte; Beton/Stahl vgl. EN 1991-1-1 Anhang A (24 bzw. 77-78,5 kN/m3), Stahl 7850 = EN 1993-1-1,
+        // Glas 2500 = EN 572-1. Weich/Unbekannt/Tuer/Kies-Schnee sind Mischwerte nach Gehoer (siehe README "Physics and sources").
         static readonly float[] StartDichte = { 2300f, 1700f, 1600f, 7850f, 7850f, 600f, 500f, 2500f, 500f, 0f, 1000f, 1000f, 2000f, 600f };
         // Groesste plausible massive Dicke (m). Dicker gemessen = hohles Objekt (Auto, Container, Haus) -> 2 Waende dieser Staerke.
+        // Keine Literaturwerte: Annahmen ueber die Spielgeometrie.
         static readonly float[] StartMassiv = { 1.0f, 3f, 3f, 0.01f, 0.003f, 0.3f, 0.05f, 0.02f, 0.1f, 0f, 0.5f, 3f, 0.5f, 0.06f };
 
         internal static bool An => Aktiv != null && Aktiv.Value && Plugin.Aktiv.Value;
@@ -60,6 +63,11 @@ namespace Materialklang
             if (dicke > mx) dicke = 2f * mx;                 // hohles Objekt: zwei Schalen
             float m = Dichte[g].Value * Mathf.Max(dicke, 0.002f);
             if (m <= 0f) return 0f;
+            // Quelle: Massengesetz bei Feldeinfall (diffuser Schalleinfall), TL = 20*log10(m''*f) - 47 dB, m'' in kg/m2.
+            // Senkrechter Einfall waere -42 dB; Feldeinfall ~5 dB weniger. Beranek & Ver, "Noise and Vibration Control
+            // Engineering" (Wiley 1992/2006); Bies, Hansen & Howard, "Engineering Noise Control" (5. Aufl., CRC 2017).
+            // Gilt unterhalb der Koinzidenzfrequenz; Koinzidenz/Resonanzen sind nicht modelliert. Deckel = Flankenwege
+            // (EN ISO 12354-1:2017), der Wert 60 dB ist eine Annahme.
             return Mathf.Clamp(20f * Mathf.Log10(m * Frequenz.Value) - 47f, 0f, Dynamik.Value);
         }
 
@@ -91,6 +99,7 @@ namespace Materialklang
             try
             {
                 float w = __instance.OcclusionEffect;
+                // dB -> Amplitudenfaktor 10^(-dB/20) (Schalldruck). Lautheit 0.2 = nach Gehoer, keine Physik.
                 float db = Dynamik.Value * w * Lautheit.Value;
                 __instance.CurrentParameters.OcclusionVolumeFactor = Mathf.Pow(10f, -db / 20f);
                 Lautstaerken++; SummeDb += db;
@@ -99,6 +108,8 @@ namespace Materialklang
         }
 
         // Tiefpass ohne Spiel-Untergrenze; laeuft vor Klangfarbe/Luft (die nur noch weiter absenken).
+        // Begruendung: Massengesetz steigt um 6 dB je Oktave -> Hoehen werden staerker gedaempft. Die Abbildung
+        // (logarithmisch 22 kHz -> 800 Hz) ist eine eigene Naeherung, keine Formel aus der Literatur.
         static void FilterNach(float occlusion, ref float lowPassFreq, ref float highPassFreq)
         {
             if (!An || occlusion <= 0.001f) return;
@@ -109,6 +120,8 @@ namespace Materialklang
         }
 
         // Der Schall nimmt den leichtesten Weg: kleinste Teil-Wertung statt Mittelwert.
+        // Quelle: parallele Wege addieren sich energetisch, der schwaechste dominiert (Flankenuebertragung,
+        // EN ISO 12354-1:2017). Minimum statt Energiesumme ist eine Vereinfachung.
         static void WertungNach(SpatialAudioOcclusionCombinedCalculator __instance, ref float __result)
         {
             if (!An) return;

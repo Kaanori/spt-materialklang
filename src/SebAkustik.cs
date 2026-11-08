@@ -259,6 +259,9 @@ namespace Materialklang
     internal static class Luft
     {
         // fc(d) = 12 kHz bei 19 m, faellt mit d^(-2/3); Feuchte stellt es nach (mehr = klarer).
+        // Quelle: ISO 9613-1:1993. Bei 20 C / 70 % r.F. erreicht die Luftdaempfung 3 dB auf 19 m bei ~11,7 kHz,
+        // auf 100 m bei ~4,7 kHz. Die Kurve d^(-2/3) ist eine Naeherung (faellt etwas steiler), Untergrenze 2,5 kHz
+        // und der Feuchte-Faktor sind nach Gehoer - nach ISO haengt der Feuchte-Einfluss von der Temperatur ab.
         public static float Grenzfrequenz(float d)
         {
             d = Mathf.Max(d, 0.5f);
@@ -491,6 +494,8 @@ namespace Materialklang
                 {
                     float w = SebAkustik.RichtW;
                     float innen = context.Environment == EnvironmentType.Indoor ? SebAkustik.InnenFaktor.Value : 1f;
+                    // Richtwirkung des Muendungsknalls ist gemessen (Beck, Nakasone & Marr, JASA 129, 1748-1759, 2011),
+                    // die Kurve (w^1.3, -4 dB, 6 kHz, Innenfaktor) ist aber nach Gehoer eingestellt, nicht daraus abgeleitet.
                     float db = SebAkustik.RueckDb.Value * Mathf.Pow(w, 1.3f) * innen;
                     info.DirLp = 22000f * Mathf.Pow(SebAkustik.RueckLpf.Value / 22000f, w * w * innen);
                     if (db < -0.01f)
