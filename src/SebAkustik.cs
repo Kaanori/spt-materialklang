@@ -57,6 +57,7 @@ namespace Materialklang
     internal sealed class SchussInfo
     {
         public bool Gueltig;
+        public bool Gedaempft;       // Klang-Log: Schuss mit Schalldaempfer (SEB ShotPlaybackContext.IsSilenced)
         public float DirLp = float.MaxValue;
         public float Abzug;          // Meter, die von der Entfernung fuer die Luftdaempfung abgezogen werden
         public float Faktor = 1f;    // Faktor auf die Entfernung (Ersatz, wenn die Bank keine Entfernungsgrenzen hat)
@@ -543,6 +544,7 @@ namespace Materialklang
             public float Faktor = 1f;
             public float W, Db;
             public bool Innen;
+            public bool Gedaempft;
         }
 
         static readonly ConditionalWeakTable<SEB.FilterBlend, BlendInfo> Tabelle =
@@ -629,6 +631,7 @@ namespace Materialklang
             {
                 info.Gueltig = true;
                 info.Innen = context.Environment == EnvironmentType.Indoor;
+                info.Gedaempft = context.IsSilenced;
                 if (context.IsFirstPerson) return;
 
                 if (SebAkustik.RichtOk && SebAkustik.RichtAktiv.Value && SebAkustik.RichtGueltig)
@@ -699,6 +702,7 @@ namespace Materialklang
                     info.Faktor = a.Faktor;
                     info.W = a.W; info.Db = a.Db;
                     info.Innen = a.Innen;
+                    info.Gedaempft = a.Gedaempft;
                 }
                 else
                 {
@@ -707,6 +711,7 @@ namespace Materialklang
                     info.Faktor = 1f;
                     info.W = 0f; info.Db = 0f;
                     info.Innen = false;
+                    info.Gedaempft = false;
                 }
             }
         }
@@ -763,7 +768,7 @@ namespace Materialklang
                     if (__result.HighPass > neu) __result.HighPass = neu;
                 }
                 if (KlangLog.An)
-                    KlangLog.SebMerken(info.Quelle, info.W, info.Db, info.DirLp, luftHz, __result.LowPass, waldM, waldHz);
+                    KlangLog.SebMerken(info.Quelle, info.W, info.Db, info.DirLp, luftHz, __result.LowPass, waldM, waldHz, info.Gedaempft);
             }
         }
     }

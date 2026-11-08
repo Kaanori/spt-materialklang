@@ -35,6 +35,8 @@ namespace Materialklang
             public bool Laeuft;
             public bool Hat;               // es gibt eine Messung (gestartet) zum Vergleichen
             public float Score = -1f;      // Wanddaempfung 0..1, -1 = keine Aussage (Vanilla gilt)
+            public readonly float[] Db = new float[WegeKern.N];   // 0.8.4 Stufe 1 (Physik-Modus): Daemmung je Band (Bezug/1k/4k)
+            public float RaumDb = float.NaN, FlankeDb = float.NaN; // Korrektur Empfangsraum/Flanken im Bezugsband (Log)
             public Vector3 PA, PB;         // Positionen beim Messen
             public float Laenge, Zeit;
             public short RA = -2, RB = -2;
@@ -44,6 +46,7 @@ namespace Materialklang
             public readonly int[] LogGruppe = new int[LogMax];
             public readonly float[] LogDicke = new float[LogMax], LogDb = new float[LogMax];
             public readonly int[] LogId = new int[LogMax];
+            public readonly int[] LogTeile = new int[LogMax];
         }
         const int LogMax = 6;
 
@@ -53,7 +56,14 @@ namespace Materialklang
         static readonly Dictionary<int, bool> Gelaende = new Dictionary<int, bool>();
         static readonly WandTreffer[] vorT = new WandTreffer[MaxTreffer], rueckT = new WandTreffer[MaxTreffer];
         static readonly WandStueck[] stuecke = new WandStueck[2 * MaxTreffer];
-        static readonly float[] energie = new float[Linien];
+        static readonly float[] energie = new float[Linien], energie1 = new float[Linien], energie2 = new float[Linien];
+        static readonly float[] bandSum = new float[WegeKern.N], bandTmp = new float[WegeKern.N];
+        static double linieMasse;
+        static float linieRaum, linieFlanke;
+        static readonly WandLage[] lagen = new WandLage[4 * MaxTreffer];
+        static readonly WandSchicht[] schichten = new WandSchicht[4 * MaxTreffer];
+        static readonly float[] dichteG = new float[Plugin.AnzahlGruppen], einzelG = new float[Plugin.AnzahlGruppen], massivG = new float[Plugin.AnzahlGruppen];
+        static readonly bool[] schaleG = new bool[Plugin.AnzahlGruppen];
         static readonly Vector3[] versatz = new Vector3[Linien];
         static bool mitteNahA, mitteNahB;
 
@@ -75,7 +85,7 @@ namespace Materialklang
             for (int i = 0; i < w.LogAnzahl && i < LogEintrag.MaxStuecke; i++)
             {
                 var st = e.Wand[i];
-                st.Gruppe = w.LogGruppe[i]; st.Dicke = w.LogDicke[i]; st.Db = w.LogDb[i]; st.Strahlen = 1; st.Name = name != null ? name(w.LogId[i]) : null;
+                st.Gruppe = w.LogGruppe[i]; st.Dicke = w.LogDicke[i]; st.Db = w.LogDb[i]; st.Strahlen = 1; st.Teile = w.LogTeile[i]; st.Name = name != null ? name(w.LogId[i]) : null;
                 e.WandAnzahl++;
             }
             return true;
@@ -238,7 +248,15 @@ namespace Materialklang
             {
                 if (!Aktiv.Value || !Tabelle.TryGetValue(__instance, out var w) || w.Score < 0f) return;
                 // Untergrenze, damit "Propagation aktiv" (Effekt > 0) erhalten bleibt
-                __result = Mathf.Max(MinWert, Mathf.Min(__result, w.Score));
+                if (Wege.Summe)
+                {
+                    // 0.8.4 Stufe 1: Route (Tueren/Fenster) und Wand sind parallele Wege -> Energiesumme statt Minimum
+                    float dyn = Physik.Dynamik.Value;
+                    float e = Physik.EnergieAusDb(__result * dyn) + Physik.EnergieAusDb(w.Score * dyn);
+                    __result = Mathf.Max(MinWert, Mathf.Min(Physik.WertungAusEnergie(e), Mathf.Min(__result, w.Score)));
+                    Wege.SummeRaumweg++;
+                }
+                else __result = Mathf.Max(MinWert, Mathf.Min(__result, w.Score));
             }
             catch (Exception e) { Statistik.Fehler(e); }
         }
@@ -314,7 +332,14 @@ namespace Materialklang
             float staerke = Plugin.Gesamtstaerke.Value, schale = Schale.Value, summe = 0f;
             w.LogAnzahl = 0;
             logW = KlangLog.An ? w : null;
-            for (int k = 0; k < Linien; k++) { logLinie = k; energie[k] = Linie(w, k, staerke, schale); }
+            if (Physik.An) Wege.TBeginn(w.PB, w.PA);     // 0.8.4 Stufe 1: Empfangsraum/Flanken = Raum des Hoerers (B)
+            w.RaumDb = w.FlankeDb = float.NaN;
+            for (int k = 0; k < Linien; k++)
+            {
+                logLinie = k; energie1[k] = energie2[k] = -1f;
+                energie[k] = Linie(w, k, staerke, schale);
+                if (k == 0) { w.RaumDb = linieRaum; w.FlankeDb = linieFlanke; }
+            }
             logW = null;
             // 0.8.3: Linien ohne Aussage (Luecke, Ende in Geometrie) fallen heraus, die Gewichte der uebrigen werden neu verteilt
             summe = WandLinie.Mitteln(energie, Gewicht, Linien);
@@ -322,6 +347,14 @@ namespace Materialklang
             if (summe < 0f) { w.Score = -1f; ohneAussage++; return; }     // keine Aussage -> Vanilla-Route gilt
             float wand = Physik.An ? Physik.WertungAusEnergie(summe) : Mathf.Clamp01(1f - summe + Zuschlag.Value);
             w.Score = wand;
+            if (Physik.An)
+            {
+                float s1 = WandLinie.Mitteln(energie1, Gewicht, Linien), s2 = WandLinie.Mitteln(energie2, Gewicht, Linien);
+                float dyn = Physik.Dynamik.Value;
+                w.Db[0] = wand * dyn;
+                w.Db[1] = s1 < 0f ? w.Db[0] : Mathf.Min(dyn, Physik.DbAusEnergie(s1));
+                w.Db[2] = s2 < 0f ? w.Db[1] : Mathf.Min(dyn, Physik.DbAusEnergie(s2));
+            }
             float route = c._propagationScore;
             if (route > 0f)
             {
@@ -341,6 +374,49 @@ namespace Materialklang
             if (befund == LinienBefund.EndeVerdeckt) { endeVerdeckt++; return -1f; }
 
             float sum = 0f;
+            bandSum[1] = bandSum[2] = 0f; linieMasse = 0; linieRaum = linieFlanke = float.NaN;
+            if (Physik.An)
+            {
+                // 0.8.4: im Physik-Modus erst zu Schichten zusammenfassen (WandLinie.Schichten), dann je Schicht Massengesetz
+                int nl = 0;
+                for (int i = 0; i < n; i++)
+                {
+                    var st = stuecke[i];
+                    int g = MaterialCache.Get(st.Id);
+                    if (g == (int)Gruppe.Body) continue;
+                    if (IstGelaende(st.Id))
+                    {
+                        if (!Beitrag(st.Id, st.Dicke, st.Einzeln, schale, ref sum)) { gesperrt++; energie1[k] = energie2[k] = 0f; return 0f; }
+                        continue;
+                    }
+                    if (st.Einzeln) einzelZahl++;
+                    if (nl + 2 > lagen.Length) break;
+                    if (!st.Einzeln && st.Dicke > 1.5f)
+                    {
+                        // wohl zwei getrennte Flaechen eines grossen Meshes (wie bisher): zwei Einzelflaechen desselben Colliders
+                        lagen[nl++] = new WandLage { A = st.Start, B = st.Start, Einzeln = true, G = g, Id = st.Id };
+                        lagen[nl++] = new WandLage { A = st.Start + st.Dicke, B = st.Start + st.Dicke, Einzeln = true, G = g, Id = st.Id };
+                        continue;
+                    }
+                    float a = st.Start, b = st.Einzeln ? st.Start : st.Start + Mathf.Max(st.Dicke, 0.02f);
+                    lagen[nl++] = new WandLage { A = a, B = b, Einzeln = st.Einzeln, G = g, Id = st.Id };
+                }
+                for (int g = 0; g < Plugin.AnzahlGruppen; g++)
+                {
+                    dichteG[g] = Physik.Dichte[g].Value; massivG[g] = Physik.Massiv[g].Value;
+                    einzelG[g] = Bauakustik.EinzelDicke(g, schale); schaleG[g] = Bauakustik.IstSchalenGruppe(g);
+                }
+                int ns = WandLinie.Schichten(lagen, nl, dichteG, einzelG, massivG, schaleG, schichten);
+                for (int i = 0; i < ns; i++)
+                {
+                    var sc = schichten[i];
+                    float db = Physik.Daemmung(sc.G, sc.Dicke);
+                    sum += db;
+                    BandDazu(sc.G, sc.Dicke);
+                    LogStueck(sc.Id, sc.G, sc.Dicke, db, sc.Teile);
+                }
+            }
+            else
             for (int i = 0; i < n; i++)
             {
                 var st = stuecke[i];
@@ -351,9 +427,21 @@ namespace Materialklang
             {
                 // Untergrenze: erreicht schon das Gesehene die Hoechstdaemmung (bzw. 30 dB ohne Physik-Modus), ist die Linie sicher dicht
                 bool dicht = Physik.An ? sum >= Physik.Dynamik.Value : e <= 1e-3f;
-                if (dicht) { lueckeDicht++; return 0f; }
+                if (dicht) { lueckeDicht++; energie1[k] = energie2[k] = 0f; return 0f; }
                 voll++;
                 return -1f;
+            }
+            if (Physik.An)
+            {
+                // 0.8.4 Stufe 1: je Band, Flanken + Empfangsraum fuer die ganze Wand (Abstaende Quelle/Hoerer -> erste/letzte Flaeche)
+                float r1 = len, r2 = len;
+                for (int i = 0; i < n; i++) { r1 = Mathf.Min(r1, stuecke[i].Start); r2 = Mathf.Min(r2, len - stuecke[i].Start - stuecke[i].Dicke); }
+                bandTmp[0] = sum; bandTmp[1] = bandSum[1]; bandTmp[2] = bandSum[2];
+                if (n > 0 && sum > 0f && linieMasse > 0) Wege.Korrigieren(linieMasse, Mathf.Max(r1, 0f), Mathf.Max(r2, 0f), bandTmp);
+                else for (int b = 0; b < WegeKern.N; b++) bandTmp[b] = Mathf.Min(bandTmp[b], Physik.Dynamik.Value);
+                linieRaum = Wege.LetzteRaumDb; linieFlanke = Wege.LetzteFlankeDb;
+                energie1[k] = Physik.EnergieAusDb(bandTmp[1]); energie2[k] = Physik.EnergieAusDb(bandTmp[2]);
+                e = Physik.EnergieAusDb(bandTmp[0]);
             }
             return e;
         }
@@ -389,6 +477,7 @@ namespace Materialklang
             {
                 float db = Physik.Daemmung(g, einzeln ? dicke : Mathf.Max(dicke, 0.02f));   // Einzelflaeche: Gruppendicke (Daemmung begrenzt selbst auf 2 mm)
                 x += db;
+                BandDazu(g, einzeln ? dicke : Mathf.Max(dicke, 0.02f));
                 LogStueck(id, g, dicke, db);
                 return true;
             }
@@ -404,13 +493,60 @@ namespace Materialklang
             return true;
         }
 
+        // 0.8.4 Stufe 1: hohe Baender und Flaechenmasse einer Schicht aufsummieren (Physik-Modus)
+        static void BandDazu(int g, float dicke)
+        {
+            var f = Wege.F;
+            bandSum[1] += Physik.Daemmung(g, dicke, (float)f[1], true);
+            bandSum[2] += Physik.Daemmung(g, dicke, (float)f[2], true);
+            linieMasse += Physik.Masse(g, dicke);
+        }
+
+        /// <summary>0.8.4 Stufe 1: Wertung der Wand (fuer die Summe in Physik/Klang-Log), -1 = keine Messung.</summary>
+        internal static bool WandFuer(ParallelSoundPropagationCalculator c, out float score, out float[] db, out float raumDb, out float flankeDb)
+        {
+            score = -1f; db = null; raumDb = flankeDb = float.NaN;
+            if (c == null || !Aktiv.Value || !Tabelle.TryGetValue(c, out var w) || w.Score < 0f) return false;
+            score = w.Score; db = w.Db; raumDb = w.RaumDb; flankeDb = w.FlankeDb;
+            return true;
+        }
+
+        /// <summary>0.8.4 Stufe 1 (Energiesumme, Raumweg + Wand): Tiefpass aus beiden Spektren, energetisch je Band summiert.
+        /// Route: Bezugsband = Wertung, Hochbaender aus ihrem Tiefpass (Tuer-Abbildung bzw. Beugung) zurueckgerechnet.</summary>
+        internal static bool SummenTiefpass(SpatialAudioOccluder occ, out float lp)
+        {
+            lp = 22000f;
+            try
+            {
+                if (!Wege.Summe || !Wege.Baender || occ == null || !occ.IsPropagationActive) return false;
+                var pc = Raumweg.RechnerVon(occ);
+                if (!WandFuer(pc, out float ws, out float[] wdb, out _, out _)) return false;
+                if (!Raumweg.Route(occ, pc, out float wr, out float lpr)) { wr = pc._propagationScore; lpr = Physik.Abbildung(wr); }
+                float dyn = Physik.Dynamik.Value;
+                var f = Wege.Frequenzen();
+                double r0 = wr * dyn, m0 = WegeKern.MehrDb(lpr, f[0]);
+                double l0 = 0, l1 = 0, l2 = 0;
+                for (int b = 0; b < WegeKern.N; b++)
+                {
+                    double er = WegeKern.Energie(-(r0 + WegeKern.MehrDb(lpr, f[b]) - m0));
+                    double ew = WegeKern.Energie(-wdb[b]);
+                    double l = WegeKern.DbAus(er + ew, -dyn);
+                    if (b == 0) l0 = l; else if (b == 1) l1 = l; else l2 = l;
+                }
+                lp = Wege.FitLp(l0 - l1, l0 - l2);
+                Wege.BandFilterRaumweg++;
+                return true;
+            }
+            catch (Exception e) { Statistik.Fehler(e); return false; }
+        }
+
         // Klang-Log: nur die mittlere Linie (Gewicht 0.4) wird mitgeschrieben
-        static void LogStueck(int id, int g, float dicke, float db)
+        static void LogStueck(int id, int g, float dicke, float db, int teile = 1)
         {
             var w = logW;
             if (w == null || logLinie != 0 || w.LogAnzahl >= LogMax) return;
             int i = w.LogAnzahl++;
-            w.LogId[i] = id; w.LogGruppe[i] = g; w.LogDicke[i] = dicke; w.LogDb[i] = db;
+            w.LogId[i] = id; w.LogGruppe[i] = g; w.LogDicke[i] = dicke; w.LogDb[i] = db; w.LogTeile[i] = teile;
         }
 
         static bool IstGelaende(int id)

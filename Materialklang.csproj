@@ -11,7 +11,7 @@
     <TargetFramework>net471</TargetFramework>
     <AssemblyName>Materialklang</AssemblyName>
     <RootNamespace>Materialklang</RootNamespace>
-    <Version>0.8.3-beta</Version>
+    <Version>0.8.4-beta</Version>
     <LangVersion>latest</LangVersion>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
@@ -37,6 +37,9 @@
     <Reference Include="UnityEngine.AudioModule"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/UnityEngine.AudioModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.PhysicsModule"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/UnityEngine.PhysicsModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.TerrainPhysicsModule"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/UnityEngine.TerrainPhysicsModule.dll</HintPath><Private>false</Private></Reference>
+    <!-- 0.8.4 Raumweg: Portaldaten des Spiels (NativeList, float3) -->
+    <Reference Include="Unity.Collections"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/Unity.Collections.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Unity.Mathematics"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/Unity.Mathematics.dll</HintPath><Private>false</Private></Reference>
     <!-- Mod-DLLs: nur zum Bauen. Zur Laufzeit sind SEB und SAIN optional (BepInDependency SoftDependency). -->
     <Reference Include="SAIN" Publicize="true"><HintPath>$(GameDir)/BepInEx/plugins/SAIN/SAIN.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="SAIN.Preset.Shared"><HintPath>$(GameDir)/BepInEx/plugins/SAIN/SAIN.Preset.Shared.dll</HintPath><Private>false</Private></Reference>

@@ -24,13 +24,14 @@ namespace Materialklang
         Snow   // ab 0.6.0 eigene Gruppe (vorher bei Kies); steht am Ende, damit die Nummern der F12-Abschnitte gleich bleiben
     }
 
-    [BepInPlugin("kaan.materialklang", "Materialklang", Plugin.Version)]
+    [BepInPlugin("kaan.materialklang", "True Acoustics – Echo & Matter", Plugin.Version)]
     [BepInDependency("me.sol.sain", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency("red.soundenginebackport", BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
-        public const string Version = "0.8.3";
+        public const string Version = "0.8.4";
         internal static ManualLogSource Log;
+        internal static Plugin Instanz;   // 0.8.4: fuer Coroutinen (Kartenexport)
         internal static ConfigEntry<bool> Aktiv;
         internal static ConfigEntry<bool> Diagnose;
         internal static ConfigEntry<float> Gesamtstaerke;
@@ -63,6 +64,7 @@ namespace Materialklang
         void Awake()
         {
             Log = Logger;
+            Instanz = this;
             Einstellungen.Anlegen(Config);
             if (Einstellungen.Migriert > 0)
                 Log.LogInfo($"Settings: {Einstellungen.Migriert} values carried over from older versions (0.4.0 German names / 0.5.0 names).");
@@ -70,7 +72,7 @@ namespace Materialklang
             SceneManager.activeSceneChanged += (_, __) =>
             {
                 MaterialCache.Leeren(); BotHoeren.Leeren(); HallZonen.SzeneGewechselt();
-                TuerenFenster.Leeren(); WandZwischenRaeumen.Leeren(); KlangLog.SzeneGewechselt();
+                TuerenFenster.Leeren(); WandZwischenRaeumen.Leeren(); KlangLog.SzeneGewechselt(); Fernschuss.SzeneGewechselt();
             };
             var h = new Harmony("kaan.materialklang");
             h.PatchAll(typeof(Plugin).Assembly);
@@ -78,7 +80,8 @@ namespace Materialklang
             TuerenFenster.Anwenden(h);
             WandZwischenRaeumen.Anwenden(h);
             SebAkustik.Anwenden(h);
-            Physik.Anwenden(h);
+            Fernschuss.Anwenden(h);   // 0.8.4: 13. Distance (SEB)
+            Physik.Anwenden(h);       // ruft auch Wege.Anwenden (0.8.4 Stufe 1, Abschnitt 14)
             FilterGleiten.Anwenden(h);
             MultiQuelle.Anwenden(h);
             QuellWirkung.Anwenden(h);
@@ -87,7 +90,7 @@ namespace Materialklang
             Log.LogInfo($"Materialklang {Version} (beta) loaded.");
         }
 
-        void Update() { HallZonen.Tick(); Statistik.VielleichtLoggen(); LiveStart.Tick(); Wetter.Tick(); Wald.Tick(); }
+        void Update() { Wege.Tick(); HallZonen.Tick(); KartenExport.Tick(); Statistik.VielleichtLoggen(); LiveStart.Tick(); Wetter.Tick(); Wald.Tick(); }
 
         void OnApplicationQuit() { KlangLog.Beenden(); }
         void OnDestroy() { KlangLog.Beenden(); }
@@ -102,8 +105,16 @@ namespace Materialklang
         public static int Get(int colliderId)
         {
             if (Karte.TryGetValue(colliderId, out byte m)) return m;
+            int r = Bestimmen(Resources.InstanceIDToObject(colliderId) as Collider, true);
+            Karte[colliderId] = (byte)r;
+            return r;
+        }
+
+        /// <summary>Gruppe eines Colliders (ohne Zwischenspeicher). statistik = in die Diagnose zaehlen (nur fuer echte Strahltreffer;
+        /// der Kartenexport, 0.8.4, nutzt dieselbe Zuordnung ohne Zaehlen).</summary>
+        internal static int Bestimmen(Collider col, bool statistik)
+        {
             int r = (int)Gruppe.Unknown;
-            var col = Resources.InstanceIDToObject(colliderId) as Collider;
             if (col is TerrainCollider) r = (int)Gruppe.Soil;
             else if (col != null && TuerenFenster.IstTuer(col)) r = (int)Gruppe.Door;
             else if (col != null)
@@ -113,13 +124,12 @@ namespace Materialklang
                     col.transform.parent.TryGetComponent(out bb);
                 if (bb is BallisticCollider bc) r = (int)Zuordnen(bc.TypeOfMaterial);
                 else if (bb is TerrainBallistic) r = (int)Gruppe.Soil;
-                Statistik.MaterialGesehen(bb is BallisticCollider bc2 ? bc2.TypeOfMaterial.ToString() : "no material", col.gameObject.layer);
+                if (statistik) Statistik.MaterialGesehen(bb is BallisticCollider bc2 ? bc2.TypeOfMaterial.ToString() : "no material", col.gameObject.layer);
             }
-            Karte[colliderId] = (byte)r;
             return r;
         }
 
-        static Gruppe Zuordnen(MaterialType t)
+        internal static Gruppe Zuordnen(MaterialType t)
         {
             switch (t)
             {
@@ -162,6 +172,8 @@ namespace Materialklang
     [HarmonyPatch(typeof(TransmissionCalculator), nameof(TransmissionCalculator.CompleteCurrentCalculation))]
     internal static class TransmissionPatch
     {
+        static readonly float[] Baender = new float[3];
+
         static void Prefix(TransmissionCalculator __instance, out bool __state)
         {
             __state = __instance._buffersAllocated && __instance._isCalculationInProgress
@@ -182,6 +194,11 @@ namespace Materialklang
                 float staerke = Plugin.Gesamtstaerke.Value;
                 bool physik = Physik.An;
                 float sumE = 0f, sumET = 0f;
+                // 0.8.4 Stufe 1: im Physik-Modus je Band (Bezug/1k/4k), mit Flankenwegen und Empfangsraum (Wege.cs)
+                float sumE1 = 0f, sumE2 = 0f, sumW0 = 0f, sumW1 = 0f, sumW2 = 0f; int frei = 0, wand = 0;
+                var f = Wege.Frequenzen();
+                if (physik) Wege.TBeginn(__instance._inputListenerPos, __instance._inputSourcePos);
+                float raumLog = float.NaN, flankeLog = float.NaN;
                 bool gueltig = false;
                 bool farbe = Farbe.Aktiv;
                 var fs = new FarbeSumme();
@@ -194,6 +211,7 @@ namespace Materialklang
                     int ia = a.colliderInstanceID, ib = b.colliderInstanceID;
                     bool ha = ia != 0 && a.distance < maxD, hb = ib != 0 && b.distance < maxD;
                     float e, th;
+                    float e1 = 1f, e2 = 1f;
                     if (!ha && !hb) { e = 1f; th = 0f; if (farbe) fs.Frei(); if (ti != null) ti.FreierStrahl(); }
                     else if (ha != hb || ia != ib) continue;          // wie Vanilla: kein Durchgang
                     else
@@ -202,7 +220,19 @@ namespace Materialklang
                         if (th >= maxT) continue;                      // wie Vanilla: zu dick
                         int m = MaterialCache.Get(ia);
                         float x = Plugin.Oberflaeche[m].Value + (th >= minT ? Plugin.Dicke[m].Value * th : 0f);
-                        float dbp = physik ? Physik.Daemmung(m, th) : x * staerke * 4.3429f;   // dB dieses Stuecks
+                        float dbp;
+                        if (physik)
+                        {
+                            var band = Baender;
+                            for (int k = 0; k < 3; k++) band[k] = Physik.Daemmung(m, th, (float)f[k], false);
+                            // r1 = Quelle -> Wand (Strahl von der Quelle), r2 = Hoerer -> Wand (Strahl vom Hoerer)
+                            Wege.TStueck(m, th, b.distance, a.distance, band);
+                            dbp = band[0];
+                            e1 = Physik.EnergieAusDb(band[1]); e2 = Physik.EnergieAusDb(band[2]);
+                            if (!float.IsNaN(Wege.LetzteRaumDb)) raumLog = Wege.LetzteRaumDb;
+                            if (!float.IsNaN(Wege.LetzteFlankeDb)) flankeLog = Wege.LetzteFlankeDb;
+                        }
+                        else dbp = x * staerke * 4.3429f;   // dB dieses Stuecks
                         e = physik ? Physik.EnergieAusDb(dbp) : Mathf.Clamp01(Mathf.Exp(-x * staerke));
                         if (farbe) fs.Add(m, x * staerke);
                         Statistik.Treffer(m);
@@ -211,6 +241,24 @@ namespace Materialklang
                     gueltig = true;
                     sumE += e;
                     sumET += e * th;
+                    sumE1 += e1; sumE2 += e2;
+                    if (th <= 0f && !ha && !hb) frei++;
+                    else { wand++; sumW0 += e; sumW1 += e1; sumW2 += e2; }
+                }
+                if (physik)
+                {
+                    var tb = Wege.THole(__instance);
+                    float dyn = Physik.Dynamik.Value;
+                    tb.Gueltig = gueltig || sumE > 0f;
+                    tb.Db[0] = Mathf.Min(dyn, Physik.DbAusEnergie(sumE / n));
+                    tb.Db[1] = Mathf.Min(dyn, Physik.DbAusEnergie(sumE1 / n));
+                    tb.Db[2] = Mathf.Min(dyn, Physik.DbAusEnergie(sumE2 / n));
+                    tb.Frei = (float)frei / n;
+                    tb.DbWand[0] = wand > 0 && sumW0 > 0f ? Physik.DbAusEnergie(sumW0 / n) : 1000f;
+                    tb.DbWand[1] = wand > 0 && sumW1 > 0f ? Physik.DbAusEnergie(sumW1 / n) : 1000f;
+                    tb.DbWand[2] = wand > 0 && sumW2 > 0f ? Physik.DbAusEnergie(sumW2 / n) : 1000f;
+                    tb.RaumDb = raumLog; tb.FlankeDb = flankeLog; tb.Raum = Wege.TRaumName;
+                    Wege.TStrahlenZaehlen = 2 * n;
                 }
 
                 var alt = __instance._resultBuffer[0];
@@ -236,7 +284,7 @@ namespace Materialklang
     [HarmonyPatch]
     internal static class FreiwegPatch
     {
-        sealed class Merk { public float Orig; }
+        sealed class Merk { public float Orig, OrigT = 0.55f, OrigD = 0.5f; }
         static readonly ConditionalWeakTable<SpatialAudioOcclusionCombinedCalculator, Merk> Original =
             new ConditionalWeakTable<SpatialAudioOcclusionCombinedCalculator, Merk>();
         static readonly List<WeakReference<SpatialAudioOcclusionCombinedCalculator>> Alle =
@@ -249,7 +297,7 @@ namespace Materialklang
         {
             if (!Original.TryGetValue(__instance, out _))
             {
-                Original.Add(__instance, new Merk { Orig = __instance._minClearPathScore });
+                Original.Add(__instance, new Merk { Orig = __instance._minClearPathScore, OrigT = __instance._transmissionThreshold, OrigD = __instance._diffractionThreshold });
                 Alle.Add(new WeakReference<SpatialAudioOcclusionCombinedCalculator>(__instance));
             }
             Setzen(__instance);
@@ -260,6 +308,21 @@ namespace Materialklang
             float v = Plugin.FreiwegSchwelle.Value;
             float orig = Original.TryGetValue(c, out var m) ? m.Orig : 0.5f;
             c._minClearPathScore = (Physik.An) ? Physik.Freiweg.Value : (v >= 0f ? v : orig);
+            // 0.8.4 Stufe 1: R fuer jeden verdeckten Klang (Spiel: nur bei T > 0,55 und D > 0,5) - sonst kaeme R mit der Energiesumme
+            // ploetzlich dazu. T > Freiweg (verdeckt), D > 0 (keine Sichtlinie).
+            if (Original.TryGetValue(c, out var mm))
+            {
+                bool immer = Wege.RImmerAn;
+                c._transmissionThreshold = immer ? c._minClearPathScore : mm.OrigT;
+                c._diffractionThreshold = immer ? 0f : mm.OrigD;
+            }
+        }
+
+        /// <summary>0.8.4 Stufe 1: Schwellen des Spiels fuer R (fuer die Kostenzaehlung "nur wegen der gesenkten Schwelle").</summary>
+        internal static void Originale(SpatialAudioOcclusionCombinedCalculator c, out float t, out float d)
+        {
+            if (Original.TryGetValue(c, out var m)) { t = m.OrigT; d = m.OrigD; }
+            else { t = 0.55f; d = 0.5f; }
         }
 
         // nach einer Aenderung der Schwellen: alle lebenden Rechner neu setzen
@@ -330,6 +393,7 @@ namespace Materialklang
             FehlerMelden();
             if (!Plugin.Diagnose.Value) return;
             SebAkustik.Loggen();
+            Fernschuss.Loggen();
             Wald.Loggen();
             Physik.Loggen();
             MultiQuelle.Loggen();

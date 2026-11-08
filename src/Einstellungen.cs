@@ -42,7 +42,10 @@ namespace Materialklang
             TuerenFenster.Binden(c);
             WandZwischenRaeumen.Binden(c);
             KlangLog.Binden(c);
+            KartenExport.Binden(c);   // 0.8.4, ebenfalls Abschnitt 11
             Wald.Binden(c);
+            Fernschuss.Binden(c);   // 0.8.4, Abschnitt 13
+            Wege.Binden(c);         // 0.8.4 Stufe 1, Abschnitt 14
 
             // Einmalig: Werte aus den alten deutschen Namen uebernehmen.
             Migriert = Einstellungsumzug.Uebernehmen(c, vorher);

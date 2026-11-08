@@ -14,6 +14,7 @@ namespace Materialklang
     //  - Lautstaerke = 10^(-Dynamik*Wertung/20) statt Spielkurve (die endet bei -4.4 dB).
     //  - Tiefpass = 22 kHz -> Grenzfrequenz bei voller Daemmung, ohne die 8-kHz-Untergrenze des Spiels.
     //  - Der leichteste Weg zaehlt: Durchdringung/Beugung/Reflexion -> Minimum statt Mittelwert.
+    //    0.8.4 Stufe 1 (Wege.cs, Abschnitt 14): D und R in echten dB, Energiesumme statt Minimum, Tiefpass aus der Bandkurve.
     internal static class Physik
     {
         internal static ConfigEntry<bool> Aktiv, Koinzidenz;
@@ -67,10 +68,22 @@ namespace Materialklang
                 Massiv[i] = c.Bind(s, $"Solid up to {i + 1:00} {namen[i]} (m)", StartMassiv[i],
                     new ConfigDescription("Measured thicker than this = hollow object: counts as two walls of this thickness.", new AcceptableValueRange<float>(0f, 5f)));
             }
+            Raumweg.Binden(c);   // 0.8.4: Raumweg aus Geometrie und Portalzustand
         }
 
         // Daemmung (dB) eines Stuecks Material der Gruppe g mit Dicke d (m).
-        internal static float Daemmung(int g, float dicke)
+        internal static float Daemmung(int g, float dicke) => Daemmung(g, dicke, Frequenz.Value, true);
+
+        /// <summary>0.8.4 Stufe 1: Flaechenmasse (kg/m2) wie in Daemmung (hohles Objekt = zwei Schalen).</summary>
+        internal static float Masse(int g, float dicke)
+        {
+            float mx = Massiv[g].Value;
+            if (dicke > mx) dicke = 2f * mx;
+            return Dichte[g].Value * Mathf.Max(dicke, 0.002f);
+        }
+
+        /// <summary>0.8.4 Stufe 1: Daemmung bei beliebiger Frequenz f (Oktavbaender); deckel = auf "Max. insulation" begrenzen.</summary>
+        internal static float Daemmung(int g, float dicke, float frequenz, bool deckel)
         {
             float mx = Massiv[g].Value;
             float schale = Mathf.Min(dicke, mx);               // Dicke einer einzelnen Schale (fuer die Koinzidenzfrequenz)
@@ -83,14 +96,14 @@ namespace Materialklang
             // Gilt unterhalb der Koinzidenzfrequenz. Darueber (dicke, schwere Waende) greift die Korrektur nach Bauakustik.cs
             // (Sharp 1978 / Cremer); duenne Gruppen bleiben unveraendert. Deckel = Flankenwege
             // (EN ISO 12354-1:2017), der Wert 60 dB ist eine Annahme.
-            double f = Frequenz.Value;
+            double f = frequenz;
             double r = Bauakustik.Massengesetz(m, f);
             if (Koinzidenz.Value && EModulGPa[g] > 0f)
             {
                 double fc = Bauakustik.Koinzidenzfrequenz(Dichte[g].Value, Mathf.Max(schale, 0.002f), EModulGPa[g] * 1e9, Querkontraktion[g]);
                 r = Bauakustik.Koinzidenz(r, m, f, fc, VerlustFaktor.Value);
             }
-            return Mathf.Clamp((float)r, 0f, Dynamik.Value);
+            return deckel ? Mathf.Clamp((float)r, 0f, Dynamik.Value) : Mathf.Max((float)r, 0f);
         }
 
         internal static float EnergieAusDb(float db) => Mathf.Pow(10f, -db / 10f);
@@ -105,6 +118,8 @@ namespace Materialklang
             Patch(h, AccessTools.DeclaredMethod(typeof(SpatialAudioOcclusionCombinedCalculator), "GetScore"), nameof(WertungNach), Priority.Normal);
             // 0.8.1: nach einem Reset (Pool, Wechsel Hindernis <-> Raumweg) gilt die gemerkte Wertung nicht mehr
             Patch(h, AccessTools.DeclaredMethod(typeof(SpatialAudioOcclusionCombinedCalculator), "OnReset"), nameof(ResetNach), Priority.Normal);
+            Raumweg.Anwenden(h);   // 0.8.4
+            Wege.Anwenden(h);      // 0.8.4 Stufe 1
             // 0.8.3: ein Rechner aus dem Pool traegt noch das Ergebnis seiner vorigen Quelle (siehe NeuerOccluderNach)
             try
             {
@@ -134,6 +149,8 @@ namespace Materialklang
             if (!An) return;
             try
             {
+                // 0.8.4: physikalischer Raumweg -> Faktor draussen/drinnen der Klanggruppe entfaellt (Raumweg.cs)
+                Raumweg.UmweltEntfernen(__instance);
                 float w = __instance.OcclusionEffect;
                 // dB -> Amplitudenfaktor 10^(-dB/20) (Schalldruck). Lautheit 0.2 = nach Gehoer, keine Physik.
                 float db = Dynamik.Value * w * Lautheit.Value;
@@ -146,13 +163,50 @@ namespace Materialklang
         // Tiefpass ohne Spiel-Untergrenze; laeuft vor Klangfarbe/Luft (die nur noch weiter absenken).
         // Begruendung: Massengesetz steigt um 6 dB je Oktave -> Hoehen werden staerker gedaempft. Die Abbildung
         // (logarithmisch 22 kHz -> 800 Hz) ist eine eigene Naeherung, keine Formel aus der Literatur.
-        static void FilterNach(float occlusion, ref float lowPassFreq, ref float highPassFreq)
+        // 0.8.4 (Meldung "klingt roboterhaft", Labs): Das Spiel hebt mit der Verdeckung auch den HOCHPASS an
+        // (hpfSettings.frequencyCurve(occlusion), im Labs-Log 70 Hz frei -> 300-460 Hz verdeckt). Zusammen mit dem Tiefpass
+        // bei 800 Hz blieb ein Band von gut einer Oktave (Q 1 an beiden Kanten) - Telefon-/Blechdosenklang. Das widerspricht
+        // dem Massengesetz, das hier den Tiefpass bestimmt: die Daemmung steigt um 6 dB je Oktave, Tiefen kommen also am
+        // BESTEN durch die Wand. Im Physik-Modus gilt deshalb der Hochpass des Spiels bei offenem Weg (Verdeckung 0, nur
+        // Richtung/Lage wie im Spiel, ohne den Isolations-Zug, den der Tiefpass hier ebenfalls nicht mehr hat).
+        static void FilterNach(Audio.Effects.AudioOcclusionEQPreset preset, float occlusion, DirectionalWeights influencedWeights,
+            ref float lowPassFreq, ref float highPassFreq)
         {
             if (!An || occlusion <= 0.001f) return;
-            float lp = 22000f * Mathf.Pow(TiefpassMin.Value / 22000f, Mathf.Clamp01(occlusion));
+            float lp = Abbildung(occlusion);
+            // 0.8.4 Stufe 1: Hindernis-Weg mit Bandkurve (T/D/R je Band, Wege.cs) -> 2-poliger Fit statt der freien Kurve
+            if (Wege.Tiefpass(Raumweg.AnwendOcc, out float lpBand)) lp = lpBand;
+            // 0.8.4 Stufe 1: Raumweg + Wand zwischen Raeumen energetisch summiert -> Fit aus beiden Spektren
+            else if (WandZwischenRaeumen.SummenTiefpass(Raumweg.AnwendOcc, out float lpSumme)) lp = lpSumme;
+            // 0.8.4: physikalischer Raumweg - Abbildung nur fuer den Tuer-/Fensteranteil, die Beugung an offenen Oeffnungen
+            // bringt ihren eigenen Tiefpass mit (Raumweg.cs / RaumwegKern.Tiefpass)
+            else if (Raumweg.Tiefpass(out float lpBeugung, out float wTuer))
+                lp = Mathf.Min(Abbildung(wTuer), lpBeugung);
             lowPassFreq = lp;
-            if (highPassFreq > lp) highPassFreq = lp;
+            float offen = highPassFreq;
+            try { if (preset != null) offen = HochpassOffen(preset, influencedWeights); }
+            catch (Exception e) { Statistik.Fehler(e); }
+            float hp = Bauakustik.HochpassPhysik(highPassFreq, offen, lp);
+            if (hp < highPassFreq - 0.5f) { HochpassGesenkt++; HochpassSummeHz += highPassFreq - hp; }
+            highPassFreq = hp;
             Filter++;
+        }
+
+        /// <summary>Alte Abbildung Wertung -> Tiefpass (logarithmisch 22 kHz -> "Low-pass at full insulation").</summary>
+        internal static float Abbildung(float w) => 22000f * Mathf.Pow(TiefpassMin.Value / 22000f, Mathf.Clamp01(w));
+
+        internal static int HochpassGesenkt;
+        internal static double HochpassSummeHz;
+
+        // Wie FilterCutoffCalculator.Compute, aber mit Verdeckung 0 (time2 = 0) und ohne Isolations-Lerp.
+        static float HochpassOffen(Audio.Effects.AudioOcclusionEQPreset preset, DirectionalWeights w)
+        {
+            var hs = preset.hpfSettings;
+            float a = hs.frequencyCurve.Evaluate(0f);
+            var t = hs.positionEqThresholds;
+            float hp = w.Front * Mathf.Min(a, t.levelFreq) + w.Up * Mathf.Min(a, t.aboveFreq)
+                     + w.Down * Mathf.Min(a, t.belowFreq) + w.Back * Mathf.Min(a, t.behindFreq);
+            return Mathf.Clamp(hp, 20f, 20000f);
         }
 
         // Wertung der letzten fertigen Rechnung je Rechner (0.8.1, siehe Stetigkeit.cs).
@@ -182,6 +236,15 @@ namespace Materialklang
                 var z = FertigTab.GetValue(__instance, FertigNeu);
                 float stetig = Stetigkeit.Waehlen(fertig, t, d, rr, r.transmissionScore, r.diffractionScore, r.reflectionScore,
                                                   ref z.Gemerkt, ref z.Letzte, out bool gehalten);
+                // 0.8.4 Stufe 1: alle Wege in dB (und als Energiesumme) - Ergebnis der letzten FERTIGEN Rechnung, gehalten bis zur
+                // naechsten (Wege.Schnappschuss), damit gilt die Stetigkeit von selbst.
+                if (Wege.Wertung(__instance, out float wege))
+                {
+                    __result = wege;
+                    Stetigkeit.Gerechnet++;
+                    if (!fertig) Stetigkeit.Gehalten++;
+                    return;
+                }
                 if (Stetigkeit.An)
                 {
                     __result = stetig;
@@ -203,7 +266,7 @@ namespace Materialklang
 
         static void ResetNach(SpatialAudioOcclusionCombinedCalculator __instance)
         {
-            try { if (FertigTab.TryGetValue(__instance, out var z)) z.Gemerkt = false; }
+            try { if (FertigTab.TryGetValue(__instance, out var z)) z.Gemerkt = false; Wege.Vergessen(__instance); }
             catch (Exception e) { Statistik.Fehler(e); }
         }
 
@@ -231,6 +294,9 @@ namespace Materialklang
 
         internal static void Loggen()
         {
+            ReflexionDirektweg.Loggen();   // 0.8.4
+            Wege.Loggen();                 // 0.8.4 Stufe 1
+            Raumweg.Loggen();              // 0.8.4
             if (Stetigkeit.Gerechnet + Stetigkeit.Geglaettet + Stetigkeit.SofortGelassen > 0)
             {
                 Plugin.Log.LogInfo($"[Diagnostics] Steady occlusion: {Stetigkeit.Gehalten} of {Stetigkeit.Gerechnet} path scores held from the last finished calculation " +
@@ -239,8 +305,9 @@ namespace Materialklang
                 Stetigkeit.Gehalten = Stetigkeit.Gerechnet = Stetigkeit.Geglaettet = Stetigkeit.SofortGelassen = PoolZurueckgesetzt = 0;
             }
             if (!An || Lautstaerken == 0) return;
-            Plugin.Log.LogInfo($"[Diagnostics] Physics mode: {Lautstaerken} volume updates (mean -{SummeDb / Lautstaerken:F1} dB), {Filter} low-pass updates.");
-            Lautstaerken = Filter = 0; SummeDb = 0;
+            Plugin.Log.LogInfo($"[Diagnostics] Physics mode: {Lautstaerken} volume updates (mean -{SummeDb / Lautstaerken:F1} dB), {Filter} low-pass updates, " +
+                               $"{HochpassGesenkt} high-pass values lowered to the open-path value (mean -{(HochpassGesenkt > 0 ? HochpassSummeHz / HochpassGesenkt : 0):F0} Hz).");
+            Lautstaerken = Filter = HochpassGesenkt = 0; SummeDb = 0; HochpassSummeHz = 0;
         }
     }
 }

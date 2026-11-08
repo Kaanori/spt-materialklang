@@ -63,6 +63,17 @@ namespace Materialklang
             float.NaN, float.NaN, float.NaN, 0.01f, 0.002f, 0.04f, 0.012f, 0.006f, 0.005f, 0f, float.NaN, float.NaN, float.NaN, 0.04f, float.NaN
         };
 
+        /// <summary>
+        /// 0.8.4: Hochpass im Physik-Modus. Hinter einer Wand bleiben nach dem Massengesetz (+6 dB je Oktave) die Tiefen am
+        /// laengsten erhalten; ein Hochpass, der mit der Verdeckung steigt (Spielkurve), ist physikalisch falsch. Ergebnis: der
+        /// Hochpass bei offenem Weg (hpOffen), nie hoeher als der des Spiels und nie ueber dem Tiefpass.
+        /// </summary>
+        public static float HochpassPhysik(float hpSpiel, float hpOffen, float lp)
+        {
+            float hp = hpOffen > 0f && hpOffen < hpSpiel ? hpOffen : hpSpiel;
+            return hp > lp ? lp : hp;
+        }
+
         // ---- Hall (HallZonen.cs), 0.8.3 ----
         // Sabine mit Luftabsorption: T60 = 0.161 * V / (S*alpha + 4*m*V), m = Energie-Daempfungskoeffizient der Luft in 1/m
         // = alpha_Luft(dB/m) / (10*log10(e)). Quelle: Kuttruff, Room Acoustics (6. Aufl., CRC 2017), Kap. 5; ISO 354:2003 (4mV-Term).
@@ -84,6 +95,9 @@ namespace Materialklang
             dRt = Sabine(vzus, a, mLuft) - Sabine(vzus, gebacken, mLuft);
             dPegel = 10.0 * Math.Log10((gebacken + luft) / (a + luft));
         }
+
+        /// <summary>0.8.4: steht eine Einzelflaeche der Gruppe g fuer eine Wandschale (Beton, Erde, Kies, ...; Tabellenwert NaN)?</summary>
+        public static bool IstSchalenGruppe(int g) => g >= 0 && g < EinzelTab.Length && float.IsNaN(EinzelTab[g]);
 
         /// <summary>Angenommene Dicke (m) einer einzelnen Flaeche der Gruppe g; nie dicker als die Schale.</summary>
         public static float EinzelDicke(int g, float schale)

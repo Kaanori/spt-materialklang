@@ -91,6 +91,19 @@ namespace Materialklang
             public float DRt1k, DPegel1k;         // Verschiebung bei 1 kHz (s, dB) laut letzter Berechnung
             public Quaternion Inv;
             public float[] Alpha = new float[Baender.Length];
+            public int GruppeOben = -1, GruppeUnten = -1;   // 0.8.4 Stufe 1: haeufigste Materialgruppe der Decke / des Bodens (Flankenwege)
+        }
+
+        /// <summary>0.8.4 Stufe 1 (Empfangsraum, Flankenwege): Daten des Raums, in dem ein Punkt steht.</summary>
+        internal struct RaumInfo
+        {
+            public float Oberflaeche, Volumen;        // Boxoberflaeche (m2), Volumen (m3)
+            public float WandFlaeche;                 // Flaeche der Boxseite Richtung Quelle (m2)
+            public float WandBreite, WandHoehe;       // Kantenlaengen dieser Seite (waagerecht / senkrecht, m)
+            public float Alpha0, Alpha1, Alpha2;      // mittlerer Absorptionsgrad bei Bezugsfrequenz / 1 kHz / 4 kHz (>= Min. absorption)
+            public bool QuelleDrin;                   // die Quelle steht in derselben Box (kein Raum dahinter)
+            public int GruppeOben, GruppeUnten;
+            public string Name;
         }
 
         static Vector3[] richtungen;
@@ -171,6 +184,7 @@ namespace Materialklang
         // Raidende / Szenenwechsel.
         public static void Leeren()
         {
+            alphaNamen.Clear();
             ZonenZerstoeren();
             daten = null;
             raeume = null;
@@ -278,6 +292,7 @@ namespace Materialklang
             var inv = Quaternion.Inverse(box.Drehung);
             float diag = Mathf.Sqrt(vx * vx + vy * vy + vz * vz);
 
+            Array.Clear(obenZ, 0, obenZ.Length); Array.Clear(untenZ, 0, untenZ.Length);
             for (int i = 0; i < richtungen.Length; i++)
             {
                 Vector3 dir = richtungen[i];
@@ -295,6 +310,12 @@ namespace Materialklang
                 treffer++;
                 zaehler[mat] = zaehler.TryGetValue(mat, out int c) ? c + 1 : 1;
                 for (int b = 0; b < Baender.Length; b++) summe[b] += Alpha(mat, Baender[b]);
+                Vector3 lokal = inv * dir;
+                if (lokal.y > 0.7f || lokal.y < -0.7f)
+                {
+                    int g = hit.collider != null ? MaterialCache.Bestimmen(hit.collider, false) : (int)Gruppe.Unknown;
+                    if (g >= 0 && g < obenZ.Length) { if (lokal.y > 0) obenZ[g]++; else untenZ[g]++; }
+                }
             }
             if (treffer < MinTreffer) return null;
 
@@ -304,7 +325,100 @@ namespace Materialklang
                 Dominant = zaehler.OrderByDescending(p => p.Value).First().Key,
             };
             for (int b = 0; b < Baender.Length; b++) d.Alpha[b] = Mathf.Max(0.005f, summe[b] / treffer);
+            d.GruppeOben = Haeufigste(obenZ); d.GruppeUnten = Haeufigste(untenZ);
             return d;
+        }
+
+        static readonly int[] obenZ = new int[Plugin.AnzahlGruppen], untenZ = new int[Plugin.AnzahlGruppen];
+        static int Haeufigste(int[] z)
+        {
+            int best = -1, n = 0;
+            for (int g = 0; g < z.Length; g++) if (z[g] > n) { n = z[g]; best = g; }
+            return best;
+        }
+
+        // ---------------------------------------------------------------- 0.8.4 Stufe 1: Daten fuer die Wegrechnung
+
+        static readonly Dictionary<int, string> alphaNamen = new Dictionary<int, string>(512);
+
+        /// <summary>Absorptionsgrad (BSG-Tabelle oben) des Colliders bei hz - fuer Reflexionstreffer (Wege.cs).</summary>
+        internal static float AlphaCollider(int colliderId, float hz)
+        {
+            if (!alphaNamen.TryGetValue(colliderId, out string mat))
+            {
+                Collider col = null;
+                try { col = Resources.InstanceIDToObject(colliderId) as Collider; } catch { }
+                mat = Materialname(col, null);
+                if (alphaNamen.Count > 20000) alphaNamen.Clear();
+                alphaNamen[colliderId] = mat;
+            }
+            return Alpha(mat, hz);
+        }
+
+        /// <summary>Raum (gemessene Box, kleinste zuerst), in dem 'hoerer' steht; Wandseite Richtung 'quelle'.
+        /// Gibt es keine Messung (Abschnitt 9 aus, noch nicht gemessen, draussen) -> false.</summary>
+        internal static bool RaumFuer(Vector3 hoerer, Vector3 quelle, float f0, out RaumInfo info)
+        {
+            info = default;
+            var liste = daten;
+            if (liste == null) return false;
+            RaumDaten best = null;
+            // Zwischenspeicher: gleiche Liste und Punkt hoechstens 0,5 m weiter -> dieselbe Box (bis zu 2 Punkte: Hoerer und Quelle)
+            int slot = -1;
+            for (int c = 0; c < cachePos.Length; c++)
+                if (ReferenceEquals(cacheListe[c], liste) && (cachePos[c] - hoerer).sqrMagnitude < 0.25f) { slot = c; break; }
+            if (slot >= 0) { best = cacheBox[slot]; if (best == null) return false; }
+            else
+            for (int i = 0; i < liste.Count; i++)
+            {
+                var d = liste[i];
+                Vector3 v = hoerer - d.Box.Mitte;
+                float r = d.Box.Halb.magnitude;
+                if (v.sqrMagnitude > r * r) continue;
+                Vector3 l = Quaternion.Inverse(d.Box.Drehung) * v;
+                if (Mathf.Abs(l.x) > d.Box.Halb.x || Mathf.Abs(l.y) > d.Box.Halb.y || Mathf.Abs(l.z) > d.Box.Halb.z) continue;
+                if (best == null || d.Volumen < best.Volumen) best = d;
+            }
+            if (slot < 0)
+            {
+                cacheNaechster = (cacheNaechster + 1) % cachePos.Length;
+                cachePos[cacheNaechster] = hoerer; cacheListe[cacheNaechster] = liste; cacheBox[cacheNaechster] = best;
+            }
+            if (best == null) return false;
+            var h = best.Box.Halb;
+            var inv = Quaternion.Inverse(best.Box.Drehung);
+            Vector3 q = inv * (quelle - best.Box.Mitte);
+            info.QuelleDrin = Mathf.Abs(q.x) <= h.x && Mathf.Abs(q.y) <= h.y && Mathf.Abs(q.z) <= h.z;
+            // Seite, durch die die Linie Hoerer -> Quelle die Box verlaesst (groesstes |q|/Halb)
+            float ax = Mathf.Abs(q.x) / Mathf.Max(h.x, 0.01f), ay = Mathf.Abs(q.y) / Mathf.Max(h.y, 0.01f), az = Mathf.Abs(q.z) / Mathf.Max(h.z, 0.01f);
+            if (ay >= ax && ay >= az) { info.WandBreite = 2 * h.x; info.WandHoehe = 2 * h.z; }        // Decke/Boden
+            else if (ax >= az) { info.WandBreite = 2 * h.z; info.WandHoehe = 2 * h.y; }
+            else { info.WandBreite = 2 * h.x; info.WandHoehe = 2 * h.y; }
+            info.WandFlaeche = info.WandBreite * info.WandHoehe;
+            info.Volumen = best.Volumen;
+            info.Oberflaeche = best.Volumen / Mathf.Max(best.VzuS, 0.01f);
+            float amin = AlphaMin != null ? AlphaMin.Value : 0.05f;
+            info.Alpha0 = Mathf.Max(amin, BandAlpha(best, f0));
+            info.Alpha1 = Mathf.Max(amin, BandAlpha(best, 1000f));
+            info.Alpha2 = Mathf.Max(amin, BandAlpha(best, 4000f));
+            info.GruppeOben = best.GruppeOben; info.GruppeUnten = best.GruppeUnten;
+            info.Name = best.Name;
+            return true;
+        }
+
+        static readonly Vector3[] cachePos = new Vector3[4];
+        static readonly List<RaumDaten>[] cacheListe = new List<RaumDaten>[4];
+        static readonly RaumDaten[] cacheBox = new RaumDaten[4];
+        static int cacheNaechster;
+
+        // alpha der Messung bei hz (zwischen den 6 Baendern logarithmisch)
+        static float BandAlpha(RaumDaten d, float hz)
+        {
+            if (hz <= Baender[0]) return d.Alpha[0];
+            for (int b = 0; b < Baender.Length - 1; b++)
+                if (hz <= Baender[b + 1])
+                    return Mathf.Lerp(d.Alpha[b], d.Alpha[b + 1], Mathf.Log(hz / Baender[b]) / Mathf.Log(Baender[b + 1] / Baender[b]));
+            return d.Alpha[Baender.Length - 1];
         }
 
         // MaterialType-Name des getroffenen Colliders (wie MaterialCache, aber ohne Gruppenbildung).
@@ -312,7 +426,7 @@ namespace Materialklang
         {
             if (col == null) return "Stone";
             int id = col.GetInstanceID();
-            if (cache.TryGetValue(id, out string s)) return s;
+            if (cache != null && cache.TryGetValue(id, out string s)) return s;
             string r = "Stone";
             if (col is TerrainCollider) r = "Soil";
             else
@@ -323,7 +437,7 @@ namespace Materialklang
                 if (bb is BallisticCollider bc) r = bc.TypeOfMaterial.ToString();
                 else if (bb is TerrainBallistic) r = "Soil";
             }
-            cache[id] = r;
+            if (cache != null) cache[id] = r;
             return r;
         }
 
@@ -489,7 +603,7 @@ namespace Materialklang
     {
         static void Postfix(AudioRoomStorage __instance)
         {
-            try { HallZonen.RaeumeMelden(__instance._validSpatialAudioRooms); KlangLog.RaidStart(); }
+            try { HallZonen.RaeumeMelden(__instance._validSpatialAudioRooms); KlangLog.RaidStart(); Wege.RaidStart(); }
             catch (Exception ex) { Statistik.Fehler(ex); }
         }
     }

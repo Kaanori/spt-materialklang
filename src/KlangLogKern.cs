@@ -261,6 +261,7 @@ namespace Materialklang
         public int Gruppe;           // Index der Materialgruppe, -1 = unbekannt
         public float Dicke, Db;      // geschaetzte Dicke (m), Daemmung dieses Stuecks (dB)
         public int Strahlen;         // wie viele Strahlen dieses Stueck trafen
+        public int Teile;            // 0.8.4, nur Wandstuecke: so viele Collider-Stuecke bilden diese Schicht (Physik-Modus)
         public string Name;
     }
 
@@ -294,8 +295,13 @@ namespace Materialklang
         public bool HatSeb;
         public float SebW, SebDb, SebDirLp, SebLuftHz, SebLp;
         public float SebWaldM = float.NaN, SebWaldHz = float.NaN;
+        public bool SebGedaempft;
+        public float SebFernDb = float.NaN;   // 0.8.4: 13. Distance (SEB), Pegelaenderung gegenueber SEB
+        public bool SebFernMitte;
 
         public string HallQuelle, HallHoerer;
+        public string RaumwegText;       // 0.8.4: Portalkette des physikalischen Raumwegs (beginnt mit " | room path:")
+        public string WegeText;          // 0.8.4 Stufe 1: Beitrag jedes Wegs in dB und die Summe (beginnt mit " | paths")
         public float HallQuelleRt, HallQuelleDb, HallHoererRt, HallHoererDb;
 
         static LogStueck[] NeueStuecke()
@@ -311,9 +317,9 @@ namespace Materialklang
             Typ = Gruppentyp = Klang = Quelle = Besitzer = QuellRaum = HoererRaum = null;
             Weg = 0; Propagation = Physik = false;
             WertT = WertD = WertR = WertRoute = WertWand = float.NaN;
-            FarbeH = FarbeL = LuftHz = WaldM = WaldDb = WaldHz = SebWaldM = SebWaldHz = float.NaN;
+            FarbeH = FarbeL = LuftHz = WaldM = WaldDb = WaldHz = SebWaldM = SebWaldHz = SebFernDb = float.NaN; SebGedaempft = SebFernMitte = false;
             Strahlen = FreieStrahlen = 0; StueckAnzahl = WandAnzahl = 0;
-            HatSeb = false; HallQuelle = HallHoerer = null;
+            HatSeb = false; HallQuelle = HallHoerer = null; RaumwegText = null; WegeText = null;
         }
     }
 
@@ -409,10 +415,19 @@ namespace Materialklang
             if (!float.IsNaN(e.WaldM)) { sb.Append(" forest="); F(sb, e.WaldM, "F0"); sb.Append(" m "); F(sb, e.WaldDb, "F1"); sb.Append(" dB lp="); F(sb, e.WaldHz / 1000f, "F1").Append(" kHz"); }
             if (e.HatSeb)
             {
+                sb.Append(e.SebGedaempft ? " | SUPPRESSED shot" : " | open shot");
                 sb.Append(" | SEB directivity w="); F(sb, e.SebW, "F2"); sb.Append(' '); F(sb, e.SebDb, "F1"); sb.Append(" dB rear-lp=");
                 F(sb, e.SebDirLp, "F0"); sb.Append(" Hz, air="); F(sb, e.SebLuftHz, "F0"); sb.Append(" Hz, final lp="); F(sb, e.SebLp, "F0").Append(" Hz");
                 if (!float.IsNaN(e.SebWaldM)) { sb.Append(", forest="); F(sb, e.SebWaldM, "F0"); sb.Append(" m lp="); F(sb, e.SebWaldHz / 1000f, "F1").Append(" kHz"); }
+                if (!float.IsNaN(e.SebFernDb))
+                {
+                    if (e.SebFernDb >= 199f) sb.Append(" | distance boost (SEB silent here)");
+                    else { sb.Append(" | distance boost "); Vorz(sb, e.SebFernDb, "F1"); sb.Append(" dB"); }
+                }
+                if (e.SebFernMitte) sb.Append(" | mid clip kept (no far clip)");
             }
+            if (e.RaumwegText != null && e.Weg == 4) sb.Append(e.RaumwegText);
+            if (e.WegeText != null) sb.Append(e.WegeText);
             if (e.QuellRaum != null || e.HoererRaum != null)
                 sb.Append(" | rooms src=").Append(e.QuellRaum ?? "-").Append(" ear=").Append(e.HoererRaum ?? "-");
             if (e.HallQuelle != null || e.HallHoerer != null)
@@ -438,6 +453,7 @@ namespace Materialklang
             F(sb, s.Db, "F1").Append(" dB");
             if (s.Strahlen > 1) sb.Append(" x").Append(s.Strahlen);
             if (!string.IsNullOrEmpty(s.Name)) sb.Append(" \"").Append(s.Name).Append('"');
+            if (s.Teile > 1) sb.Append(" (").Append(s.Teile).Append(" parts as one layer)");
         }
     }
 
@@ -498,7 +514,7 @@ namespace Materialklang
                 var frei = e.Stuecke[ende];                 // faellt heraus (oder ist ein unbenutzter Platz)
                 for (int s = ende; s > pos; s--) e.Stuecke[s] = e.Stuecke[s - 1];
                 e.Stuecke[pos] = frei;
-                frei.Gruppe = Gr[i]; frei.Dicke = d; frei.Db = b; frei.Strahlen = n; frei.Name = name != null ? name(id) : null;
+                frei.Gruppe = Gr[i]; frei.Dicke = d; frei.Db = b; frei.Strahlen = n; frei.Teile = 0; frei.Name = name != null ? name(id) : null;
                 if (e.StueckAnzahl < LogEintrag.MaxStuecke) e.StueckAnzahl++;
             }
         }

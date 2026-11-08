@@ -53,7 +53,7 @@ namespace Materialklang
         internal static float LpEnde = float.NaN, HpEnde = float.NaN, LuftHz = float.NaN, FarbeH = float.NaN, FarbeL = float.NaN;
         internal static float WaldM = float.NaN, WaldDb = float.NaN, WaldHz = float.NaN;   // Wald (Laubdaempfung) des Geraeusches, das gerade verarbeitet wird
 
-        struct SebWert { public double Zeit; public float W, Db, DirLp, LuftHz, Lp, WaldM, WaldHz; }
+        struct SebWert { public double Zeit; public float W, Db, DirLp, LuftHz, Lp, WaldM, WaldHz, FernDb; public bool Gedaempft, FernMitte; }
         static readonly Dictionary<int, SebWert> sebWerte = new Dictionary<int, SebWert>(64);
 
         static readonly ConditionalWeakTable<TransmissionCalculator, TransInfo> transTab =
@@ -201,10 +201,11 @@ namespace Materialklang
 
         internal static TransInfo TransHole(TransmissionCalculator c) => transTab.GetValue(c, _ => new TransInfo());
 
-        internal static void SebMerken(BetterSource q, float w, float db, float dirLp, float luftHz, float lp, float waldM, float waldHz)
+        internal static void SebMerken(BetterSource q, float w, float db, float dirLp, float luftHz, float lp, float waldM, float waldHz, bool gedaempft = false)
         {
             if (q == null) return;
-            sebWerte[q.GetInstanceID()] = new SebWert { Zeit = KlangSchreiber.Jetzt(), W = w, Db = db, DirLp = dirLp, LuftHz = luftHz, Lp = lp, WaldM = waldM, WaldHz = waldHz };
+            float fernDb = Fernschuss.LogDb(q, out bool fernMitte);   // 0.8.4: 13. Distance (SEB)
+            sebWerte[q.GetInstanceID()] = new SebWert { Zeit = KlangSchreiber.Jetzt(), W = w, Db = db, DirLp = dirLp, LuftHz = luftHz, Lp = lp, WaldM = waldM, WaldHz = waldHz, Gedaempft = gedaempft, FernDb = fernDb, FernMitte = fernMitte };
         }
 
         // Postfix FilterCutoffCalculator.Compute (zuletzt): endgueltige Grenzfrequenzen merken
@@ -275,6 +276,7 @@ namespace Materialklang
             {
                 tc = Kontext.MultiCalc;
             }
+            if (pc == null) pc = Raumweg.RechnerVon(occ);   // 0.8.4: MultiSource/ContinuousPropagated haben ihren Raumweg-Rechner woanders
             e.Strahlen = e.FreieStrahlen = e.StueckAnzahl = 0;
             if (!e.Propagation && tc != null && transTab.TryGetValue(tc, out var ti))
             {
@@ -285,8 +287,10 @@ namespace Materialklang
             {
                 e.WertRoute = pc._propagationScore;
                 if (e.Propagation) WandZwischenRaeumen.LogDaten(pc, e, colNameF);
+                if (e.Propagation) e.RaumwegText = Raumweg.LogText(occ, out _);   // 0.8.4: Portalkette (nur path=rooms)
             }
             e.Weg = ZeilenFormat.WegWahl(e.Propagation, e.Wirkung, e.WertT, e.WertD, e.WertR, e.WertRoute, e.WertWand);
+            e.WegeText = e.Propagation ? Wege.RaumLogText(occ, pc) : Wege.LogText(occ);   // 0.8.4 Stufe 1
 
             // ---- Ergebnis ----
             e.Lautstaerke = occ.CurrentParameters.OcclusionVolumeFactor;
@@ -300,7 +304,7 @@ namespace Materialklang
             // ---- SEB (nur Schuesse, nur wenn frisch) ----
             if (sebWerte.TryGetValue(source.GetInstanceID(), out var sw) && KlangSchreiber.Jetzt() - sw.Zeit < 1.5)
             {
-                e.HatSeb = true; e.SebW = sw.W; e.SebDb = sw.Db; e.SebDirLp = sw.DirLp; e.SebLuftHz = sw.LuftHz; e.SebLp = sw.Lp; e.SebWaldM = sw.WaldM; e.SebWaldHz = sw.WaldHz;
+                e.HatSeb = true; e.SebW = sw.W; e.SebDb = sw.Db; e.SebDirLp = sw.DirLp; e.SebLuftHz = sw.LuftHz; e.SebLp = sw.Lp; e.SebWaldM = sw.WaldM; e.SebWaldHz = sw.WaldHz; e.SebGedaempft = sw.Gedaempft; e.SebFernDb = sw.FernDb; e.SebFernMitte = sw.FernMitte;
             }
 
             // ---- Hall (Zone, in der Quelle und Hoerer stehen) ----
