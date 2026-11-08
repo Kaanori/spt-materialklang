@@ -1,10 +1,12 @@
-# Materialklang (Material Sound) – BETA
+# True Acoustics – Echo & Matter (BETA)
+
+*Formerly **Materialklang** (Material Sound). Same mod, same settings – only the name changed: it does much more than material sounds now.*
 
 Sound that knows what a wall is made of. Concrete swallows the highs and lets a dull thump through, a wooden door is a weak barrier, a steel door a strong one, and a gunshot behind you sounds different from one in front of you. Works for **all** sounds in the game, not just gunshots.
 
-**🎧 Hear the difference yourself:** [Material Sound Demo](https://claude.ai/artifact/7BXLomAnuBnL6ofqfq41RC) – vanilla vs. Materialklang side by side, plus a sound sandbox where you build walls, doors and windows (or load a real map) and listen live, with or without ray tracing. Headphones recommended.
+**🎧 Hear the difference yourself:** [Material Sound Demo](https://claude.ai/artifact/7BXLomAnuBnL6ofqfq41RC) – vanilla vs. True Acoustics side by side, plus a sound sandbox where you build walls, doors and windows (or load a real map) and listen live, with or without ray tracing. Headphones recommended.
 
-> **BETA – early version.** Materialklang has been listened to in the F12 menu and sounds good, but it has **not yet been checked in real raids** (no raid log review, no long play sessions, only one tester). Expect rough edges and values that still need tuning. Feedback is very welcome: please open an issue and, if you can, attach the relevant lines of `BepInEx/LogOutput.log` (they start with `[Diagnostics]` or `[Reverb]`).
+> **BETA – early version.** True Acoustics has been listened to in the F12 menu and sounds good, but it has **not yet been checked in real raids** (no raid log review, no long play sessions, only one tester). Expect rough edges and values that still need tuning. Feedback is very welcome: please open an issue and, if you can, attach the relevant lines of `BepInEx/LogOutput.log` (they start with `[Diagnostics]` or `[Reverb]`).
 
 ## How this mod was made (AI disclosure)
 
@@ -12,7 +14,7 @@ This mod was **programmed by Claude**, an AI assistant made by Anthropic.
 **Kaan was the tester**: Kaan has no programming background, played with the mod
 on SPT 4.1.6, reported what went wrong, and Claude fixed it. No human programmer
 has reviewed the code. It is open source so anyone can check it — if you find a
-bug, please open an [issue](https://github.com/Kaanori/spt-materialklang/issues).
+bug, please open an [issue](https://github.com/Kaanori/spt-true-acoustics/issues).
 
 ## Requirements
 
@@ -21,7 +23,7 @@ bug, please open an [issue](https://github.com/Kaanori/spt-materialklang/issues)
 
 ## Installation
 
-1. Download `Materialklang-0.8.3-beta.zip` from the [Releases](https://github.com/Kaanori/spt-materialklang/releases) page.
+1. Download `Materialklang-0.8.3-beta.zip` from the [Releases](https://github.com/Kaanori/spt-true-acoustics/releases) page.
 2. Extract it **into your SPT game folder** (the folder that contains `EscapeFromTarkov.exe`).
    The ZIP already has the right layout; the mod ends up in `BepInEx/plugins/`.
    On Windows, make sure "Extract All" does not add an extra subfolder.
@@ -33,7 +35,7 @@ Delete the mod's files from `BepInEx/plugins/` (settings: `BepInEx/config/` for 
 
 ## What it does, in plain words
 
-Escape from Tarkov (and SPT) already shoots invisible rays between a sound and your ears to decide how muffled it is, but the game treats every wall the same: a thin plywood board and a thick concrete wall differ only in how many meters the ray travelled through them. Materialklang looks at what the ray actually hit (concrete, wood, metal, glass, soil, ...) and works out the muffling from that.
+Escape from Tarkov (and SPT) already shoots invisible rays between a sound and your ears to decide how muffled it is, but the game treats every wall the same: a thin plywood board and a thick concrete wall differ only in how many meters the ray travelled through them. True Acoustics looks at what the ray actually hit (concrete, wood, metal, glass, soil, ...) and works out the muffling from that.
 
 It is an add-on for **Sound Engine Backport (SEB)** and is meant to be played together with it, but most of it also works without.
 
@@ -44,7 +46,7 @@ It is an add-on for **Sound Engine Backport (SEB)** and is meant to be played to
 | **Physics Mode** (on by default) | Real building acoustics: the insulation of a wall follows the *mass law* (heavier and thicker = quieter). Thick concrete is nearly silent, a plank is not. Applies to every sound with an obstacle in the way. |
 | **Material table** (sections `2.xx`) | The simpler, hand-tunable alternative to Physics Mode: attenuation per meter and base attenuation for 15 material groups. Used when Physics Mode is off. |
 | **Doors and windows** | A closed thin wooden door lets more through than a closed steel door; an intact window absorbs some sound, a broken one none; for rows of windows the game itself accounts for how much of the row is broken. |
-| **Walls between rooms** | Vanilla only lets sound travel between rooms through doors and windows – the wall in between does not count. Materialklang also measures the straight line through the walls and uses whichever path is quieter, so a loud fight next door can come through the wall. |
+| **Walls between rooms** | Vanilla only lets sound travel between rooms through doors and windows – the wall in between does not count. True Acoustics also measures the straight line through the walls and uses whichever path is quieter, so a loud fight next door can come through the wall. |
 | **Timbre** | Materials filter highs and lows differently (concrete: dull but with a thump, wood: hollow). Only for sound through walls. |
 | **Weapon directivity** | Other people's gunshots are quieter and duller when the muzzle points away from you (less so indoors). Needs SEB. |
 | **Air absorption** | Highs fade with distance (about 12 kHz at 19 m, falling with distance, never below 2.5 kHz). Since 0.7.0 the curve is calculated with ISO 9613-1 from the raid's temperature and pressure and an estimated humidity; an `Air clarity factor` makes the air duller or clearer. For gunshots (SEB) the part that is already baked into SEB's distant recordings is subtracted. |
@@ -65,11 +67,11 @@ Every part has its own **Enabled** switch in the F12 menu. Switch off everything
 | **Settings** | `BepInEx/config/kaan.materialklang.cfg` (F12 menu, English labels) |
 | **License** | MIT |
 
-- **Sound Engine Backport (SEB)** – *recommended, not required* (soft dependency). Materialklang was built and tuned next to SEB 1.0.3. With an SEB version other than 1.0.x the SEB parts stay off (log warning), and if SEB changes something Materialklang relies on, those parts switch themselves off for the session (log error) while shots keep playing normally. Without SEB, **weapon directivity** and the **air absorption of gunshots** switch off (the log says so); everything else (materials, doors, windows, walls, timbre, air absorption of other sounds, reverb) only touches the base game's own audio system. Running it *without* SEB has not been tested yet.
+- **Sound Engine Backport (SEB)** – *recommended, not required* (soft dependency). True Acoustics was built and tuned next to SEB 1.0.3. With an SEB version other than 1.0.x the SEB parts stay off (log warning), and if SEB changes something True Acoustics relies on, those parts switch themselves off for the session (log error) while shots keep playing normally. Without SEB, **weapon directivity** and the **air absorption of gunshots** switch off (the log says so); everything else (materials, doors, windows, walls, timbre, air absorption of other sounds, reverb) only touches the base game's own audio system. Running it *without* SEB has not been tested yet.
 - **SAIN** – optional, only for **bot hearing**, which is **off** by default. Tested with SAIN 4.5.1; with another version the log shows a warning. Without SAIN that section simply does nothing.
 - **Meta XR Audio** – not something you install: it is part of the game (`Meta.XR.Audio.dll`) and is what the game itself uses for room reverb. The reverb zones talk to it directly. If it is unavailable the zones are skipped and the rest keeps working.
-- It hooks into internal parts of the game's audio system, so a **game update can break parts of it**. Where a hook target is missing, Materialklang logs a warning and that part stays vanilla.
-- Other mods that change volume, room sound or the mixer can fight with it (SEB's author gives the same warning for his own mod). If something sounds odd, switch Materialklang's sections off one by one in F12 to find the culprit.
+- It hooks into internal parts of the game's audio system, so a **game update can break parts of it**. Where a hook target is missing, True Acoustics logs a warning and that part stays vanilla.
+- Other mods that change volume, room sound or the mixer can fight with it (SEB's author gives the same warning for his own mod). If something sounds odd, switch True Acoustics's sections off one by one in F12 to find the culprit.
 
 ## Settings overview (F12)
 
@@ -152,16 +154,16 @@ Switch on `Live tuning`. The plugin creates `BepInEx/config/kaan.materialklang.l
 - **Maps.** The reverb measurement relies on the game's interior rooms (about 400 zones at most per raid); open or unusual rooms may be skipped.
 - **No material data for some surfaces.** Anything the game does not tag with a material counts as "Unknown" and behaves like vanilla.
 - **Sounds that get a new occlusion container** (for example some environment and one-shot sounds) start before the game's asynchronous ray calculation has a result, so their first moment can be less muffled than the rest; since 0.8.1 the correction glides instead of jumping. Bot footsteps, gear and voices use a container per bot and are not affected.
-- **Volume steps at indoor/outdoor changes.** When you or a bot step between indoors and outdoors, the game switches its indoor/outdoor factor at once (e.g. a door path score of 0.34 becomes 0.68), so the volume of that sound can change by about 10 dB within one update. This is the game's behaviour (in Physics Mode more audible than in vanilla); Materialklang does not smooth it yet.
+- **Volume steps at indoor/outdoor changes.** When you or a bot step between indoors and outdoors, the game switches its indoor/outdoor factor at once (e.g. a door path score of 0.34 becomes 0.68), so the volume of that sound can change by about 10 dB within one update. This is the game's behaviour (in Physics Mode more audible than in vanilla); True Acoustics does not smooth it yet.
 - **Game updates** can break hooks (see above).
 
 ## Physics and sources
 
-What Materialklang calculates, what each part is based on, and where a value is simply game data or chosen by ear. Numbers in square brackets point to the reference list at the end of this section.
+What True Acoustics calculates, what each part is based on, and where a value is simply game data or chosen by ear. Numbers in square brackets point to the reference list at the end of this section.
 
 ### 1. Wall insulation: the mass law (Physics Mode)
 
-A wall stops sound mainly by being heavy: the sound has to shake it, and a heavier wall moves less. The textbook rule for this is the *mass law*. For sound arriving straight on (normal incidence) it is `TL ≈ 20·log10(m·f) − 42 dB`; for sound arriving from all directions, as in a real room (*field incidence*), it is about 5 dB lower [1, 2]. Materialklang uses the field-incidence form:
+A wall stops sound mainly by being heavy: the sound has to shake it, and a heavier wall moves less. The textbook rule for this is the *mass law*. For sound arriving straight on (normal incidence) it is `TL ≈ 20·log10(m·f) − 42 dB`; for sound arriving from all directions, as in a real room (*field incidence*), it is about 5 dB lower [1, 2]. True Acoustics uses the field-incidence form:
 
 ```
 TL = 20 · log10(m · f) − 47 dB        m = density × thickness (kg/m²), f = 250 Hz
@@ -208,7 +210,7 @@ the result never exceeds the plain mass law
 
 - **Thin pieces are not touched.** Only concrete/stone (`E` 25 GPa, `ν` 0.2), thick metal (200 GPa, 0.3) and thick wood (9 GPa, 0.3) have a plate model; thin wood, thin metal, glass, door leaves, soil, gravel, snow, soft materials, bodies and "unknown" keep the pure mass law. Within the modelled groups a piece is unchanged whenever `fc ≥ 2·f`, i.e. at 250 Hz: concrete thinner than about 4 cm, thick wood thinner than about 3 cm, steel thinner than about 2.5 cm (the default steel limit is 1 cm, so steel is never affected by default). Very thick walls (about 1 m of concrete) end up close to the mass law again, because far above `fc` the Sharp slope catches up.
 - **Typical effect at 250 Hz:** 5 cm concrete −4 dB, 10 cm −11 dB, 20 cm −8 dB, 30 cm −6 dB, 50 cm −4 dB, 1 m −1 dB (before the 60 dB cap and before the loudness factor).
-- **What is verified and what is not.** The bibliographic data of Sharp's paper [12] is checked; I could not retrieve the paper itself, so the construction and the constants follow the secondary descriptions in [13] and in textbook form [1, 2] (the constant is −48 dB in some of them and −47 dB in others; Materialklang keeps its −47 everywhere). **The loss factor 0.1 is an effective total loss factor (internal damping + edge losses + radiation) fitted so that 100–200 mm concrete shows a dip of roughly 8–11 dB at 250 Hz, as typical measured curves do. It is not a literature value** – raise `Coincidence loss factor` for shallower dips, or switch the correction off.
+- **What is verified and what is not.** The bibliographic data of Sharp's paper [12] is checked; I could not retrieve the paper itself, so the construction and the constants follow the secondary descriptions in [13] and in textbook form [1, 2] (the constant is −48 dB in some of them and −47 dB in others; True Acoustics keeps its −47 everywhere). **The loss factor 0.1 is an effective total loss factor (internal damping + edge losses + radiation) fitted so that 100–200 mm concrete shows a dip of roughly 8–11 dB at 250 Hz, as typical measured curves do. It is not a literature value** – raise `Coincidence loss factor` for shallower dips, or switch the correction off.
 - The correction is not a replacement for flanking limits: the 60 dB cap stays.
 
 ### 2. Default densities
@@ -238,12 +240,12 @@ Densities 01, 04, 05, 08 are standard values (snow: handbook range [14]); the ot
 - **Loudness:** `volume factor = 10^(−dB × Loudness factor / 20)` – the standard conversion from a level difference in dB to a sound-pressure (amplitude) factor [2].
 - **Loudness factor 0.2 is chosen by ear, not physics.** A real gunshot is far louder than headphones can play, so true-to-life insulation (factor 1.0) would make anything behind concrete silent. 0.2 compresses the real values into the range of game loudness.
 - **Muffling (low-pass):** the mass law rises 6 dB per octave, so a wall removes highs more than lows [1, 2]. The mapping `cut-off = 22 kHz × (800 Hz / 22 kHz)^score` (logarithmic, from open to fully insulated) is my own approximation, not a formula from the literature.
-- **The lightest path counts:** sound reaches you through the wall, around corners and via reflections at the same time. Parallel paths add up as energy, so the weakest barrier dominates – the same idea as flanking transmission in building acoustics [3]. Materialklang takes the *smallest* of the three occlusion scores instead of the game's average; using the minimum instead of a full energy sum is a simplification. Known limit: in Physics Mode the transmission score is a dB scale (score = dB / 60), while the diffraction and reflection scores are the game's own heuristics on a 0..1 scale – the minimum compares numbers of different origin. There is no calibration curve for them (no measurements to fit one to).
+- **The lightest path counts:** sound reaches you through the wall, around corners and via reflections at the same time. Parallel paths add up as energy, so the weakest barrier dominates – the same idea as flanking transmission in building acoustics [3]. True Acoustics takes the *smallest* of the three occlusion scores instead of the game's average; using the minimum instead of a full energy sum is a simplification. Known limit: in Physics Mode the transmission score is a dB scale (score = dB / 60), while the diffraction and reflection scores are the game's own heuristics on a 0..1 scale – the minimum compares numbers of different origin. There is no calibration curve for them (no measurements to fit one to).
 - **One value per sound:** the game keeps one occlusion value per occluder, but multiplies it with an indoor/outdoor factor that depends on the sound group (character sounds 2.0, weapon sounds 1.5 in the logs). Between full updates the game re-applies the stored volume of every sound but recalculated the low-pass from the value of whichever sound was calculated *last* – the footsteps of a bot got the weapon's value every few frames (in Physics Mode one octave of low-pass back and forth). Since 0.8.3 every sound keeps its own value, so its low-pass and its volume always come from the same calculation.
 
 ### 4. Doors and windows
 
-The defaults (`Door thin wood` 0.35, `thick wood` 0.45, `thin metal` 0.6, `thick metal` 0.8, `Window intact` 0.55) are scores on the same scale as Physics Mode (score × 60 dB), i.e. about 21, 27, 36, 48 and 33 dB before the loudness factor. They are **set by hand** for a plausible order (wood < glass < steel), not taken from measurements of particular doors; real doors are often limited by the gaps around them. For a row of windows with broken panes the game itself already uses the size and cost of the broken part for the path; since 0.8.3 Materialklang no longer adds the remaining glass a second time (the opening dominates anyway, it is a parallel path).
+The defaults (`Door thin wood` 0.35, `thick wood` 0.45, `thin metal` 0.6, `thick metal` 0.8, `Window intact` 0.55) are scores on the same scale as Physics Mode (score × 60 dB), i.e. about 21, 27, 36, 48 and 33 dB before the loudness factor. They are **set by hand** for a plausible order (wood < glass < steel), not taken from measurements of particular doors; real doors are often limited by the gaps around them. For a row of windows with broken panes the game itself already uses the size and cost of the broken part for the path; since 0.8.3 True Acoustics no longer adds the remaining glass a second time (the opening dominates anyway, it is a parallel path).
 
 ### 5. Walls between rooms and bot hearing
 
@@ -256,7 +258,7 @@ The defaults (`Door thin wood` 0.35, `thick wood` 0.45, `thin metal` 0.6, `thick
 
 ### 6. Air absorption
 
-Air swallows high frequencies over distance; the international calculation method is ISO 9613-1 [7]. Since 0.7.0 Materialklang uses it directly (setting `Use raid weather (ISO 9613-1)`, on by default).
+Air swallows high frequencies over distance; the international calculation method is ISO 9613-1 [7]. Since 0.7.0 True Acoustics uses it directly (setting `Use raid weather (ISO 9613-1)`, on by default).
 
 **Formula.** The absorption coefficient for pure tones is (ISO 9613-1:1993, eq. 3-5, with the molar water-vapour concentration from annex B)
 
@@ -268,7 +270,7 @@ alpha(f) = 8.686 f^2 { 1.84e-11 (pa/pr)^-1 (T/T0)^0.5
 
 with the relaxation frequencies of oxygen and nitrogen `frO`, `frN` (which depend on pressure `pa`, temperature `T` and the water-vapour concentration `h` that follows from relative humidity). `T0 = 293.15 K`, `pr = 101.325 kPa`.
 
-**From absorption to a low-pass.** The game filters with a cut-off frequency, not with a per-frequency attenuation. Materialklang takes the frequency at which the air absorbs exactly **3 dB over the distance** (`alpha(fc) × d = 3 dB`; found by bisection) as the cut-off, multiplies it with the `Air clarity factor`, and clamps it to 2.5 ... 22 kHz. The 3 dB point is a choice, not part of the standard. A table "cut-off versus distance" (96 steps, 1 m ... 3 km) is calculated whenever the weather or a setting changes; each sound costs only a table lookup.
+**From absorption to a low-pass.** The game filters with a cut-off frequency, not with a per-frequency attenuation. True Acoustics takes the frequency at which the air absorbs exactly **3 dB over the distance** (`alpha(fc) × d = 3 dB`; found by bisection) as the cut-off, multiplies it with the `Air clarity factor`, and clamps it to 2.5 ... 22 kHz. The 3 dB point is a choice, not part of the standard. A table "cut-off versus distance" (96 steps, 1 m ... 3 km) is calculated whenever the weather or a setting changes; each sound costs only a table lookup.
 
 **Weather inputs.** Read from the game at raid start and every 30 s:
 
@@ -310,7 +312,7 @@ Cold air absorbs more than warm air at the same humidity, humid air less than dr
 
 ### 7. Weapon directivity
 
-The muzzle blast of a firearm is directional: measurements show that its level and waveform depend strongly on the angle between the barrel and the microphone [8]. Materialklang uses
+The muzzle blast of a firearm is directional: measurements show that its level and waveform depend strongly on the angle between the barrel and the microphone [8]. True Acoustics uses
 
 ```
 w = (1 − cos angle) / 2              0 = muzzle points at you, 1 = points away
@@ -326,13 +328,13 @@ The low/high weights per material (e.g. concrete: highs ×1.5, lows ×0.6) that 
 
 ### 9. Reverb by material
 
-The reverb time of a room depends on its volume and on how much its surfaces absorb. Materialklang uses *Sabine's formula* in SI units [9, 10]:
+The reverb time of a room depends on its volume and on how much its surfaces absorb. True Acoustics uses *Sabine's formula* in SI units [9, 10]:
 
 ```
 T60 = 0.161 · V / (S · α + 4·m·V)  V = room volume (m³), S = surface (m²), α = mean absorption coefficient, m = air attenuation (1/m)
 ```
 
-- The game's baked room data treat every surface as α = 0.1 (found in the game's own data). Materialklang measures the real wall materials of each room with 64 evenly spread rays, averages α per band (125 Hz … 4 kHz) and sends the **difference** to the game's reverb as a Meta XR *control zone*:
+- The game's baked room data treat every surface as α = 0.1 (found in the game's own data). True Acoustics measures the real wall materials of each room with 64 evenly spread rays, averages α per band (125 Hz … 4 kHz) and sends the **difference** to the game's reverb as a Meta XR *control zone*:
   `ΔT60 = T60(max(α, α_min)) − T60(0.1)`, clamped to −0.8 … +1.5 s.
 - **Minimum absorption** (`Min. absorption`, default 0.05): the rays only see wall surfaces, but openings, furniture, gaps and clutter absorb too. The mean α is therefore never taken below 0.05, which means a room never rings longer than twice the game's baked reverb. This is an assumption, not a measured value. Up to 0.8.2 there was no such floor: bare concrete (α 0.02) gave +4 … +5 s for almost every room, so nearly every concrete room sat at the +1.5 s clamp and rooms of different size sounded the same.
 - **Air absorption in the room** (the `4·m·V` term, as in ISO 354 [17]): m from ISO 9613-1 [7] at 20 °C, 50 % humidity and 101.325 kPa (typical room conditions), the same for the baked and the new reverb time. It matters in large halls and at high frequencies (m ≈ 0.007 /m at 4 kHz, 0.001 /m at 1 kHz).
@@ -403,7 +405,7 @@ Example (20 °C, 60 %, `Strength` 1, sound source in the distance given, the who
 
 ## Credits
 
-- **[Sound Engine Backport](https://github.com/RedTheFoxx/SPT-SEB) by RedTheFoxx** – the live sound engine for SPT this is an add-on for. Materialklang only hooks into it at run time (Harmony); no SEB code is included. Thanks for a mod to build on.
+- **[Sound Engine Backport](https://github.com/RedTheFoxx/SPT-SEB) by RedTheFoxx** – the live sound engine for SPT this is an add-on for. True Acoustics only hooks into it at run time (Harmony); no SEB code is included. Thanks for a mod to build on.
 - **SAIN** – the bot AI whose hearing check the optional bot mode adjusts.
 - **Meta XR Audio** (Meta Platforms) and **Battlestate Games' spatial audio system** – the ray-based occlusion and the room reverb that this mod feeds with materials; the absorption values per material come from the unused material table that ships in the game.
 - The physics are textbook acoustics: the *mass law* for wall insulation and *Sabine's formula* for reverb time – see [Physics and sources](#physics-and-sources) for the references.
@@ -411,7 +413,7 @@ Example (20 °C, 60 %, `Strength` 1, sound source in the distance given, the who
 
 ## Changelog
 
-See [CHANGELOG.md](https://github.com/Kaanori/spt-materialklang/blob/main/CHANGELOG.md).
+See [CHANGELOG.md](https://github.com/Kaanori/spt-true-acoustics/blob/main/CHANGELOG.md).
 
 ## Building from source
 
@@ -431,8 +433,8 @@ or via the environment variable `SPT_DIR`.
 
 ## Support
 
-Bugs and questions: [GitHub issues](https://github.com/Kaanori/spt-materialklang/issues).
+Bugs and questions: [GitHub issues](https://github.com/Kaanori/spt-true-acoustics/issues).
 
 ## License
 
-MIT — see [LICENSE](https://github.com/Kaanori/spt-materialklang/blob/main/LICENSE).
+MIT — see [LICENSE](https://github.com/Kaanori/spt-true-acoustics/blob/main/LICENSE).
