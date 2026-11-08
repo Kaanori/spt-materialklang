@@ -39,7 +39,13 @@ namespace Materialklang
             public float Laenge, Zeit;
             public short RA = -2, RB = -2;
             public int Schmutz;
+            // Klang-Log: Stuecke der mittleren Linie (nur gefuellt, solange das Log an ist)
+            public int LogAnzahl;
+            public readonly int[] LogGruppe = new int[LogMax];
+            public readonly float[] LogDicke = new float[LogMax], LogDb = new float[LogMax];
+            public readonly int[] LogId = new int[LogMax];
         }
+        const int LogMax = 6;
 
         struct Ereignis { public float t; public int id; }
 
@@ -52,9 +58,28 @@ namespace Materialklang
         static readonly Vector3[] versatz = new Vector3[Linien];
 
         static int hauptThread, schmutz, budgetBild, budgetRest;
+        static WandWeg logW; static int logLinie;
         // Diagnose
         static int gestartet, gemessen, vergleiche, wandGewann, gesperrt, voll, ohneBudget;
         static double summeRoute, summeWand;
+
+        /// <summary>Live-Aenderung: alle Wandmessungen gelten als veraltet und werden neu gestartet.</summary>
+        internal static void Neu() { schmutz++; }
+
+        /// <summary>Klang-Log: Wertung der Wand und die Stuecke der mittleren Linie (false, wenn es keine Messung gibt).</summary>
+        internal static bool LogDaten(ParallelSoundPropagationCalculator c, LogEintrag e, Func<int, string> name)
+        {
+            if (c == null || !Tabelle.TryGetValue(c, out var w) || w.Score < 0f) return false;
+            e.WertWand = w.Score;
+            e.WandAnzahl = 0;
+            for (int i = 0; i < w.LogAnzahl && i < LogEintrag.MaxStuecke; i++)
+            {
+                var st = e.Wand[i];
+                st.Gruppe = w.LogGruppe[i]; st.Dicke = w.LogDicke[i]; st.Db = w.LogDb[i]; st.Strahlen = 1; st.Name = name != null ? name(w.LogId[i]) : null;
+                e.WandAnzahl++;
+            }
+            return true;
+        }
 
         internal static void Binden(ConfigFile c)
         {
@@ -285,7 +310,10 @@ namespace Materialklang
             w.Handle.Complete();      // fertig laut IsCompleted -> blockiert nicht
             w.Laeuft = false;
             float staerke = Plugin.Gesamtstaerke.Value, schale = Schale.Value, summe = 0f;
-            for (int k = 0; k < Linien; k++) summe += Gewicht[k] * Linie(w, k, staerke, schale);
+            w.LogAnzahl = 0;
+            logW = KlangLog.An ? w : null;
+            for (int k = 0; k < Linien; k++) { logLinie = k; summe += Gewicht[k] * Linie(w, k, staerke, schale); }
+            logW = null;
             float wand = Physik.An ? Physik.WertungAusEnergie(summe) : Mathf.Clamp01(1f - summe + Zuschlag.Value);
             w.Score = wand;
             gemessen++;
@@ -370,15 +398,32 @@ namespace Materialklang
             if (!gelaende && dicke > 1.5f) dicke = 2f * schale;     // wohl zwei getrennte Flaechen eines grossen Meshes
             int g = MaterialCache.Get(id);
             if (g == (int)Gruppe.Body) return true;              // Spieler/Leichen zaehlen nicht als Wand
-            if (Physik.An) { x += Physik.Daemmung(g, Mathf.Max(dicke, 0.02f)); return true; }
+            if (Physik.An)
+            {
+                float db = Physik.Daemmung(g, Mathf.Max(dicke, 0.02f));
+                x += db;
+                LogStueck(id, g, dicke, db);
+                return true;
+            }
             float s = Plugin.Oberflaeche[g].Value;
             if (g == (int)Gruppe.Door)
             {
                 float ts = TuerenFenster.TuerS(id);
                 if (ts >= 0f) s = ts;
             }
-            x += s + Plugin.Dicke[g].Value * Mathf.Max(dicke, 0.02f);
+            float dd = Mathf.Max(dicke, 0.02f);
+            x += s + Plugin.Dicke[g].Value * dd;
+            LogStueck(id, g, dicke, (s + Plugin.Dicke[g].Value * dd) * Plugin.Gesamtstaerke.Value * 4.3429f);
             return true;
+        }
+
+        // Klang-Log: nur die mittlere Linie (Gewicht 0.4) wird mitgeschrieben
+        static void LogStueck(int id, int g, float dicke, float db)
+        {
+            var w = logW;
+            if (w == null || logLinie != 0 || w.LogAnzahl >= LogMax) return;
+            int i = w.LogAnzahl++;
+            w.LogId[i] = id; w.LogGruppe[i] = g; w.LogDicke[i] = dicke; w.LogDb[i] = db;
         }
 
         static bool IstGelaende(int id)

@@ -60,13 +60,15 @@ namespace Materialklang
         public float DirLp = float.MaxValue;
         public float Abzug;          // Meter, die von der Entfernung fuer die Luftdaempfung abgezogen werden
         public float Faktor = 1f;    // Faktor auf die Entfernung (Ersatz, wenn die Bank keine Entfernungsgrenzen hat)
+        public float W, Db;          // Klang-Log: Richtwirkung dieses Schusses (0 = zum Hoerer, 1 = weg) und ihre Lautstaerke in dB
+        public bool Innen;           // Schuss faellt in einem Innenraum (kein Wald)
     }
 
     internal static class Farbe
     {
         // Reihenfolge wie enum Gruppe: Tiefen-/Hoehen-Gewicht je Material (Bezug: 0.77 / 1.17).
-        internal static readonly float[] WL = { .6f, .6f, .8f, .5f, .6f, .65f, .75f, .9f, .75f, 1f, .7f, .5f, .77f, .65f };   // letzter: Tuer (wie dickes Holz)
-        internal static readonly float[] WH = { 1.5f, 1.5f, 1.3f, 1.3f, 1.0f, 1.25f, 1.15f, 1.45f, 1.4f, 1f, 1.4f, 1.6f, 1.17f, 1.25f };
+        internal static readonly float[] WL = { .6f, .6f, .8f, .5f, .6f, .65f, .75f, .9f, .75f, 1f, .7f, .5f, .77f, .65f, .8f };   // Tuer (wie dickes Holz), Schnee (wie Kies)
+        internal static readonly float[] WH = { 1.5f, 1.5f, 1.3f, 1.3f, 1.0f, 1.25f, 1.15f, 1.45f, 1.4f, 1f, 1.4f, 1.6f, 1.17f, 1.25f, 1.3f };
 
         internal static ConfigEntry<bool> AktivCfg;
         internal static ConfigEntry<float> Staerke;
@@ -120,21 +122,82 @@ namespace Materialklang
         }
 
         // Prefix SpatialAudioOccluder.ApplyOcclusionToSource: wer fragt, und welche Klangfarbe gilt dafuer?
-        static void KontextVor(SpatialAudioOccluder __instance, BetterSource source)
+        // 0.8.1: ausserdem "sofort setzen" nur noch fuer Quellen, die noch nicht hoerbar laufen (Stetigkeit.cs, Ursache 2).
+        static void KontextVor(SpatialAudioOccluder __instance, BetterSource source, ref bool updateImmediately)
         {
+            if (updateImmediately) SofortPruefen(__instance, source, ref updateImmediately);
             Kontext.Quelle = source;
             Kontext.HatFarbe = false;
             Kontext.dH = Kontext.dL = 0f;
+            Kontext.WaldDa = false; Kontext.VolGeaendert = false;
+            WaldVor(__instance, source);
             if (!Aktiv) return;
             try { FarbeBerechnen(__instance); }
             catch (Exception ex) { Statistik.Fehler(ex); }
         }
 
+        // Das Spiel setzt den Filter bei kleinen Aenderungen (gemerkte Werte, ApplyCachedParamsToContainer u. a.) mit
+        // updateImmediately = true - ohne Rampe. Laeuft der Klang schon hoerbar und fuehrt das Spiel seinen Filter jedes Bild
+        // nach, gleitet er stattdessen mit der Spiel-eigenen Rampe (AudioEQFilterBase, Lerp 5/s). Neue oder stille Klaenge
+        // (und die Einmal-Klaenge des MultiSource-Occluders, die stumm starten) bekommen ihren Wert weiter sofort.
+        static void SofortPruefen(SpatialAudioOccluder occ, BetterSource q, ref bool sofort)
+        {
+            try
+            {
+                if (q == null || !Plugin.Aktiv.Value || !Stetigkeit.An || occ is MultiSourceSpatialAudioOccluder) return;
+                var a = q.source1;
+                if (a == null) return;
+                bool jedesBild = q._isSubscribed && a.enabled && q.gameObject.activeInHierarchy;
+                bool spielt = jedesBild && a.isPlaying;
+                if (Stetigkeit.SofortZulassen(jedesBild, spielt, spielt ? a.time : 0f)) { Stetigkeit.SofortGelassen++; return; }
+                sofort = false;
+                Stetigkeit.Geglaettet++;
+            }
+            catch (Exception ex) { Statistik.Fehler(ex); }
+        }
+
         static Exception KontextEnde(Exception __exception)
         {
+            if (Kontext.VolGeaendert)
+            {
+                // die Lautstaerke wurde nur fuer diesen Aufruf abgesenkt (die Quelle hat sie schon); die Rechenwerte bleiben wie vom Spiel
+                try { Kontext.Occ.CurrentParameters.OcclusionVolumeFactor = Kontext.VolOrig; } catch { }
+                Kontext.VolGeaendert = false;
+            }
+            Kontext.Occ = null;
+            Kontext.WaldDa = false;
             Kontext.Quelle = null;
             Kontext.HatFarbe = false;
             return __exception;
+        }
+
+        // Laubdaempfung (Wald.cs): Pegel hier (vor dem Setzen der Lautstaerke an der Quelle), Tiefpass in ComputeNach bzw. BlendNach.
+        static void WaldVor(SpatialAudioOccluder occ, BetterSource q)
+        {
+            try
+            {
+                if (!Wald.Bereit || !Wald.Aktiv.Value) return;
+                // nur im Freien: Quelle und Hoerer beide in Innenraeumen -> kein Wald dazwischen
+                var qr = occ.SourceContainer != null ? occ.SourceContainer.CurrentAudioRoom : null;
+                var hr = occ.AudioSystem != null ? occ.AudioSystem.ListenerCurrentRoom : null;
+                if (qr != null && hr != null && !qr.IsOutdoor && !hr.IsOutdoor) return;
+                var ba = MonoBehaviourSingleton<BetterAudio>.Instance;
+                var lt = ba != null ? ba.ListenerTransform : null;
+                if (lt == null) return;
+                Vector3 h = lt.position, p = q.Position;
+                float dl = SebAkustik.LuftAktiv.Value ? Vector3.Distance(p, h) : 0f;
+                if (!Wald.Berechnen(q.GetInstanceID(), p, h, dl, out var r)) return;
+                Kontext.WaldE = r; Kontext.WaldDa = true;
+                if (r.Db > 0.01f)
+                {
+                    var cp = occ.CurrentParameters;
+                    Kontext.Occ = occ; Kontext.VolOrig = cp.OcclusionVolumeFactor;
+                    cp.OcclusionVolumeFactor = Kontext.VolOrig * Wald.Verstaerkung(r.Db);
+                    Kontext.VolGeaendert = true;
+                }
+                if (KlangLog.An && Wald.ImLog.Value) { KlangLog.WaldM = r.Meter; KlangLog.WaldDb = -r.Db; KlangLog.WaldHz = r.LpHz; }
+            }
+            catch (Exception ex) { Statistik.Fehler(ex); }
         }
 
         static void Farbwerte(Klangfarbe k, out float dH, out float dL)
@@ -224,6 +287,7 @@ namespace Materialklang
                 {
                     float d = Entfernung(q);
                     float fc = Luft.Grenzfrequenz(d);
+                    if (KlangLog.An) KlangLog.LuftHz = fc;
                     if (fc < lp)
                     {
                         lp = fc;
@@ -231,6 +295,11 @@ namespace Materialklang
                         SebAkustik.LuftAndere++;
                         SebAkustik.LuftAndereSummeFc += fc;
                     }
+                }
+                if (Kontext.WaldDa && !SebAkustik.IstSebQuelle(q) && Kontext.WaldE.LpHz < lp)
+                {
+                    lp = Kontext.WaldE.LpHz;
+                    if (hp > lp) hp = lp;
                 }
                 lowPassFreq = lp;
                 highPassFreq = hp;
@@ -254,18 +323,30 @@ namespace Materialklang
         internal static bool HatFarbe;
         internal static float dH, dL;
         internal static TransmissionCalculator MultiCalc;
+        // Wald (Laubdaempfung) fuer die Quelle, die gerade verarbeitet wird
+        internal static bool WaldDa;
+        internal static WaldErgebnis WaldE;
+        internal static SpatialAudioOccluder Occ;
+        internal static float VolOrig;
+        internal static bool VolGeaendert;
     }
 
     internal static class Luft
     {
-        // fc(d) = 12 kHz bei 19 m, faellt mit d^(-2/3); Feuchte stellt es nach (mehr = klarer).
+        // fc(d) = 12 kHz bei 19 m, faellt mit d^(-2/3); der "Air clarity factor" (frueher "Humidity") skaliert es (mehr = klarer).
         // Quelle: ISO 9613-1:1993. Bei 20 C / 70 % r.F. erreicht die Luftdaempfung 3 dB auf 19 m bei ~11,7 kHz,
         // auf 100 m bei ~4,7 kHz. Die Kurve d^(-2/3) ist eine Naeherung (faellt etwas steiler), Untergrenze 2,5 kHz
-        // und der Feuchte-Faktor sind nach Gehoer - nach ISO haengt der Feuchte-Einfluss von der Temperatur ab.
+        // und der Faktor sind nach Gehoer. Achtung: TROCKENE Luft daempft die Hoehen STAERKER (ISO 9613-1, 20 C, 8 kHz:
+        // ~217 dB/km bei 20 % r.F., ~59 dB/km bei 100 %); der Faktor ist daher keine "Feuchte", sondern ein Klarheitsfaktor.
+        // Seit 0.7.0: mit "Use raid weather (ISO 9613-1)" (Standard) kommt die Grenzfrequenz stattdessen aus der ISO-9613-1-Rechnung
+        // mit Temperatur/Druck des Raids und geschaetzter Feuchte (Wetter.cs / Luftabsorption.cs): Frequenz, bei der die Luft ueber
+        // die Entfernung 3 dB daempft. Klarheitsfaktor und Grenzen 2,5 .. 22 kHz gelten unveraendert.
         public static float Grenzfrequenz(float d)
         {
             d = Mathf.Max(d, 0.5f);
-            float fc = 12000f * Mathf.Pow(19f / d, 2f / 3f) * SebAkustik.Feuchte.Value;
+            float fc = Wetter.An
+                ? Wetter.Grenzfrequenz(d) * SebAkustik.Feuchte.Value
+                : 12000f * Mathf.Pow(19f / d, 2f / 3f) * SebAkustik.Feuchte.Value;
             return Mathf.Clamp(fc, 2500f, 22000f);
         }
     }
@@ -273,7 +354,7 @@ namespace Materialklang
     internal static class SebAkustik
     {
         internal static ConfigEntry<bool> RichtAktiv, LuftAktiv;
-        internal static ConfigEntry<float> RueckDb, RueckLpf, InnenFaktor, Feuchte, SchussAbzug;
+        internal static ConfigEntry<float> RueckDb, RueckLpf, InnenFaktor, Feuchte, SchussAbzug;   // Feuchte = "Air clarity factor" (frueher "Humidity")
 
         internal static bool RichtOk, LuftOk, SebLuftOk;
 
@@ -294,7 +375,7 @@ namespace Materialklang
         {
             const string s6 = "6. Timbre";
             Farbe.AktivCfg = c.Bind(s6, "Enabled", true,
-                "Materials filter highs and lows differently: concrete swallows the highs and lets the thump through, wood sounds more hollow. Only for sound through walls (not through a door gap). Has no effect while Physics Mode is on (its low-pass already carries the tilt). Takes effect after a game restart.");
+                "Materials filter highs and lows differently: concrete swallows the highs and lets the thump through, wood sounds more hollow. Only for sound through walls (not through a door gap). Has no effect while Physics Mode is on (its low-pass already carries the tilt). Applies live (to new calculations).");
             Farbe.Staerke = c.Bind(s6, "Strength", 1f,
                 new ConfigDescription("How strongly the timbre shifts the cut-off frequencies (1 = 12 dB difference = one octave).", new AcceptableValueRange<float>(0f, 3f)));
 
@@ -310,11 +391,12 @@ namespace Materialklang
 
             const string s8 = "8. Air Absorption";
             LuftAktiv = c.Bind(s8, "Enabled", true,
-                "Highs are lost with distance (low-pass: 12 kHz at 19 m, falling after that, at least 2.5 kHz). The base game does not have this.");
-            Feuchte = c.Bind(s8, "Humidity", 1f,
-                new ConfigDescription("Factor on the cut-off frequency. Below 1 = duller (damp air/fog), above 1 = clearer.", new AcceptableValueRange<float>(0.3f, 3f)));
+                "Highs are lost with distance (low-pass: about 12 kHz at 19 m, falling after that, at least 2.5 kHz). The base game does not have this. With \"Use raid weather\" the curve follows the raid's temperature, pressure and estimated humidity.");
+            Feuchte = c.Bind(s8, "Air clarity factor", 1f,
+                new ConfigDescription("Factor on the cut-off frequency of the air low-pass (the setting was called \"Humidity\" before 0.6.0; same effect, your value is carried over). 1 = the curve as calculated (with \"Use raid weather\": ISO 9613-1 for the raid weather; otherwise the fixed curve, about 20 C / 70 % humidity). Below 1 = duller (more absorption, as in dry air: at 20 C, 8 kHz is absorbed with ~217 dB/km at 20 % humidity but only ~59 dB/km at 100 %). Above 1 = clearer (damp air).", new AcceptableValueRange<float>(0.3f, 3f)));
             SchussAbzug = c.Bind(s8, "Shot offset", 1f,
                 new ConfigDescription("Shots (Sound Engine Backport) already have the air baked into their distant recordings. 1 = air only counts beyond the last distance limit of the recording, 0 = full distance.", new AcceptableValueRange<float>(0f, 1f)));
+            Wetter.Binden(c, s8);
         }
 
         // ---------------------------------------------------------------------------------------
@@ -440,6 +522,8 @@ namespace Materialklang
             public float DirLp = float.MaxValue;
             public float Abzug;
             public float Faktor = 1f;
+            public float W, Db;
+            public bool Innen;
         }
 
         static readonly ConditionalWeakTable<SEB.FilterBlend, BlendInfo> Tabelle =
@@ -488,6 +572,7 @@ namespace Materialklang
             try
             {
                 info.Gueltig = true;
+                info.Innen = context.Environment == EnvironmentType.Indoor;
                 if (context.IsFirstPerson) return;
 
                 if (SebAkustik.RichtOk && SebAkustik.RichtAktiv.Value && SebAkustik.RichtGueltig)
@@ -505,6 +590,7 @@ namespace Materialklang
                             context.BaseVolume * DbZuGain(db), context.Environment, context.IsFirstPerson,
                             context.Delay, context.BeatDuration, context.PitchA, context.PitchB, context.IsSilenced);
                     }
+                    info.W = w; info.Db = db;
                     SebAkustik.RichtSchuesse++;
                     SebAkustik.RichtSummeW += w;
                     SebAkustik.RichtSummeDb += db;
@@ -549,12 +635,16 @@ namespace Materialklang
                     info.DirLp = spatialEnabled ? a.DirLp : float.MaxValue;
                     info.Abzug = a.Abzug;
                     info.Faktor = a.Faktor;
+                    info.W = a.W; info.Db = a.Db;
+                    info.Innen = a.Innen;
                 }
                 else
                 {
                     info.DirLp = float.MaxValue;
                     info.Abzug = 0f;
                     info.Faktor = 1f;
+                    info.W = 0f; info.Db = 0f;
+                    info.Innen = false;
                 }
             }
             catch (Exception ex) { Statistik.Fehler(ex); }
@@ -568,16 +658,34 @@ namespace Materialklang
                 if (!Tabelle.TryGetValue(__instance, out var info) || info.Quelle == null) return;
                 float alt = __result.LowPass;
                 float neu = alt;
+                float luftHz = float.NaN;
                 if (SebAkustik.RichtOk && SebAkustik.RichtAktiv.Value && info.DirLp < neu) neu = info.DirLp;
                 if (SebAkustik.SebLuftOk && SebAkustik.LuftAktiv.Value)
                 {
                     float d = Mathf.Max(0f, Farbe.Entfernung(info.Quelle) * info.Faktor - info.Abzug);
                     float fc = Luft.Grenzfrequenz(d);
+                    luftHz = fc;
                     if (fc < neu)
                     {
                         neu = fc;
                         SebAkustik.SebLuft++;
                         SebAkustik.SebLuftSummeFc += fc;
+                    }
+                }
+                float waldM = float.NaN, waldHz = float.NaN;
+                if (Wald.Bereit && Wald.Aktiv.Value && !info.Innen)
+                {
+                    var ba = MonoBehaviourSingleton<BetterAudio>.Instance;
+                    var lt = ba != null ? ba.ListenerTransform : null;
+                    if (lt != null)
+                    {
+                        Vector3 p = info.Quelle.Position, h = lt.position;
+                        float dl = SebAkustik.SebLuftOk && SebAkustik.LuftAktiv.Value ? Mathf.Max(0f, Vector3.Distance(p, h) * info.Faktor - info.Abzug) : 0f;
+                        if (Wald.Berechnen(info.Quelle.GetInstanceID() ^ 0x40000000, p, h, dl, out var wr))
+                        {
+                            waldM = wr.Meter; waldHz = wr.LpHz;
+                            if (wr.LpHz < neu) neu = wr.LpHz;
+                        }
                     }
                 }
                 if (neu < alt)
@@ -586,6 +694,8 @@ namespace Materialklang
                     __result.LowPassQ = 1f;
                     if (__result.HighPass > neu) __result.HighPass = neu;
                 }
+                if (KlangLog.An)
+                    KlangLog.SebMerken(info.Quelle, info.W, info.Db, info.DirLp, luftHz, __result.LowPass, waldM, waldHz);
             }
             catch (Exception ex) { Statistik.Fehler(ex); }
         }

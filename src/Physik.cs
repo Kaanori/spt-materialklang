@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using Audio.SpatialSystem;
 using Audio.SpatialSystem.Utils;
 using BepInEx.Configuration;
@@ -15,18 +16,26 @@ namespace Materialklang
     //  - Der leichteste Weg zaehlt: Durchdringung/Beugung/Reflexion -> Minimum statt Mittelwert.
     internal static class Physik
     {
-        internal static ConfigEntry<bool> Aktiv;
-        internal static ConfigEntry<float> Dynamik, Frequenz, TiefpassMin, Freiweg, Lautheit;
+        internal static ConfigEntry<bool> Aktiv, Koinzidenz;
+        internal static ConfigEntry<float> Dynamik, Frequenz, TiefpassMin, Freiweg, Lautheit, VerlustFaktor;
         internal static readonly ConfigEntry<float>[] Dichte = new ConfigEntry<float>[Plugin.AnzahlGruppen];
         internal static readonly ConfigEntry<float>[] Massiv = new ConfigEntry<float>[Plugin.AnzahlGruppen];
 
         // kg/m^3 (Gitter/Zaun/Gras = offen -> 0). Reihenfolge wie Gruppe.
         // Quelle: uebliche Tabellenwerte; Beton/Stahl vgl. EN 1991-1-1 Anhang A (24 bzw. 77-78,5 kN/m3), Stahl 7850 = EN 1993-1-1,
-        // Glas 2500 = EN 572-1. Weich/Unbekannt/Tuer/Kies-Schnee sind Mischwerte nach Gehoer (siehe README "Physics and sources").
-        static readonly float[] StartDichte = { 2300f, 1700f, 1600f, 7850f, 7850f, 600f, 500f, 2500f, 500f, 0f, 1000f, 1000f, 2000f, 600f };
+        // Glas 2500 = EN 572-1. Weich/Unbekannt/Tuer/Kies sind Mischwerte nach Gehoer (siehe README "Physics and sources").
+        // Schnee (eigene Gruppe seit 0.6.0): 300 kg/m3 = Mitte zwischen frischem (~100-300) und gepacktem Schnee (~300-500); Tabellenwerte der Schneekunde.
+        static readonly float[] StartDichte = { 2300f, 1700f, 1600f, 7850f, 7850f, 600f, 500f, 2500f, 500f, 0f, 1000f, 1000f, 2000f, 600f, 300f };
         // Groesste plausible massive Dicke (m). Dicker gemessen = hohles Objekt (Auto, Container, Haus) -> 2 Waende dieser Staerke.
         // Keine Literaturwerte: Annahmen ueber die Spielgeometrie.
-        static readonly float[] StartMassiv = { 1.0f, 3f, 3f, 0.01f, 0.003f, 0.3f, 0.05f, 0.02f, 0.1f, 0f, 0.5f, 3f, 0.5f, 0.06f };
+        static readonly float[] StartMassiv = { 1.0f, 3f, 3f, 0.01f, 0.003f, 0.3f, 0.05f, 0.02f, 0.1f, 0f, 0.5f, 3f, 0.5f, 0.06f, 3f };
+
+        // Plattenmodell fuer die Koinzidenz-Korrektur (nur dicke, schwere Gruppen; 0 = keine Korrektur, das Massengesetz bleibt).
+        // E-Modul in GPa und Querkontraktionszahl, typische Tabellenwerte: Beton ~25-30 GPa (nu 0.2), Stahl 200 GPa (nu 0.3),
+        // Holz (Biegung laengs der Faser) ~9 GPa (nu 0.3). Duenne Gruppen (duenn Holz/Metall, Glas, Tuer) bleiben bewusst ohne
+        // Korrektur: ihre Koinzidenzfrequenz liegt bei den Standarddicken oberhalb von 2x Bezugsfrequenz bzw. ihr Modell ist unsicher.
+        static readonly float[] EModulGPa = { 25f, 0f, 0f, 200f, 0f, 9f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f };
+        static readonly float[] Querkontraktion = { 0.2f, 0f, 0f, 0.3f, 0f, 0.3f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f };
 
         internal static bool An => Aktiv != null && Aktiv.Value && Plugin.Aktiv.Value;
 
@@ -44,9 +53,13 @@ namespace Materialklang
             TiefpassMin = c.Bind(s, "Low-pass at full insulation (Hz)", 800f,
                 new ConfigDescription("How muffled it sounds at maximum insulation.", new AcceptableValueRange<float>(150f, 4000f)));
             Freiweg = c.Bind(s, "Clear-path threshold", 0.02f,
-                new ConfigDescription("Score from which a path counts as occluded (0.02 = about 1 dB). Game: 0.5 = 30 dB. Takes effect from the next raid.", new AcceptableValueRange<float>(0f, 0.5f)));
-            string[] namen = { "Concrete/Stone", "Soil/Terrain", "Gravel/Snow", "Metal thick", "Metal thin", "Wood thick", "Wood thin",
-                               "Glass", "Soft", "Grate/Fence/Grass", "Body", "Water", "Unknown", "Door leaf" };
+                new ConfigDescription("Score from which a path counts as occluded (0.02 = about 1 dB). Game: 0.5 = 30 dB. Applies live.", new AcceptableValueRange<float>(0f, 0.5f)));
+            Koinzidenz = c.Bind(s, "Coincidence correction", true,
+                "Thick heavy walls (concrete/stone, thick metal, thick wood) insulate less than the plain mass law above their coincidence frequency (Sharp / Cremer, see README). Thin groups are never changed. Off = pure mass law.");
+            VerlustFaktor = c.Bind(s, "Coincidence loss factor", 0.1f,
+                new ConfigDescription("Effective total loss factor of the coincidence correction (internal damping + edges + radiation). Higher = shallower dip. 0.1 is fitted to typical measured curves of 100-200 mm concrete, not a literature value.", new AcceptableValueRange<float>(0.02f, 0.5f)));
+            string[] namen = { "Concrete/Stone", "Soil/Terrain", "Gravel/Pebbles", "Metal thick", "Metal thin", "Wood thick", "Wood thin",
+                               "Glass", "Soft", "Grate/Fence/Grass", "Body", "Water", "Unknown", "Door leaf", "Snow" };
             for (int i = 0; i < Plugin.AnzahlGruppen; i++)
             {
                 Dichte[i] = c.Bind(s, $"Density {i + 1:00} {namen[i]} (kg/m3)", StartDichte[i],
@@ -60,15 +73,24 @@ namespace Materialklang
         internal static float Daemmung(int g, float dicke)
         {
             float mx = Massiv[g].Value;
+            float schale = Mathf.Min(dicke, mx);               // Dicke einer einzelnen Schale (fuer die Koinzidenzfrequenz)
             if (dicke > mx) dicke = 2f * mx;                 // hohles Objekt: zwei Schalen
             float m = Dichte[g].Value * Mathf.Max(dicke, 0.002f);
             if (m <= 0f) return 0f;
             // Quelle: Massengesetz bei Feldeinfall (diffuser Schalleinfall), TL = 20*log10(m''*f) - 47 dB, m'' in kg/m2.
             // Senkrechter Einfall waere -42 dB; Feldeinfall ~5 dB weniger. Beranek & Ver, "Noise and Vibration Control
             // Engineering" (Wiley 1992/2006); Bies, Hansen & Howard, "Engineering Noise Control" (5. Aufl., CRC 2017).
-            // Gilt unterhalb der Koinzidenzfrequenz; Koinzidenz/Resonanzen sind nicht modelliert. Deckel = Flankenwege
+            // Gilt unterhalb der Koinzidenzfrequenz. Darueber (dicke, schwere Waende) greift die Korrektur nach Bauakustik.cs
+            // (Sharp 1978 / Cremer); duenne Gruppen bleiben unveraendert. Deckel = Flankenwege
             // (EN ISO 12354-1:2017), der Wert 60 dB ist eine Annahme.
-            return Mathf.Clamp(20f * Mathf.Log10(m * Frequenz.Value) - 47f, 0f, Dynamik.Value);
+            double f = Frequenz.Value;
+            double r = Bauakustik.Massengesetz(m, f);
+            if (Koinzidenz.Value && EModulGPa[g] > 0f)
+            {
+                double fc = Bauakustik.Koinzidenzfrequenz(Dichte[g].Value, Mathf.Max(schale, 0.002f), EModulGPa[g] * 1e9, Querkontraktion[g]);
+                r = Bauakustik.Koinzidenz(r, m, f, fc, VerlustFaktor.Value);
+            }
+            return Mathf.Clamp((float)r, 0f, Dynamik.Value);
         }
 
         internal static float EnergieAusDb(float db) => Mathf.Pow(10f, -db / 10f);
@@ -81,6 +103,8 @@ namespace Materialklang
             Patch(h, AccessTools.DeclaredMethod(typeof(SpatialAudioOccluder), "CalculateFinalOcclusionParams"), nameof(LautstaerkeNach), Priority.Normal);
             Patch(h, AccessTools.DeclaredMethod(typeof(FilterCutoffCalculator), "Compute"), nameof(FilterNach), Priority.First);
             Patch(h, AccessTools.DeclaredMethod(typeof(SpatialAudioOcclusionCombinedCalculator), "GetScore"), nameof(WertungNach), Priority.Normal);
+            // 0.8.1: nach einem Reset (Pool, Wechsel Hindernis <-> Raumweg) gilt die gemerkte Wertung nicht mehr
+            Patch(h, AccessTools.DeclaredMethod(typeof(SpatialAudioOcclusionCombinedCalculator), "OnReset"), nameof(ResetNach), Priority.Normal);
         }
 
         static void Patch(Harmony h, System.Reflection.MethodInfo ziel, string methode, int prio)
@@ -119,22 +143,64 @@ namespace Materialklang
             Filter++;
         }
 
+        // Wertung der letzten fertigen Rechnung je Rechner (0.8.1, siehe Stetigkeit.cs).
+        sealed class Fertig { public bool Gemerkt; public float Letzte; }
+        static readonly ConditionalWeakTable<SpatialAudioOcclusionCombinedCalculator, Fertig> FertigTab =
+            new ConditionalWeakTable<SpatialAudioOcclusionCombinedCalculator, Fertig>();
+        static readonly ConditionalWeakTable<SpatialAudioOcclusionCombinedCalculator, Fertig>.CreateValueCallback FertigNeu = _ => new Fertig();
+
         // Der Schall nimmt den leichtesten Weg: kleinste Teil-Wertung statt Mittelwert.
         // Quelle: parallele Wege addieren sich energetisch, der schwaechste dominiert (Flankenuebertragung,
         // EN ISO 12354-1:2017). Minimum statt Energiesumme ist eine Vereinfachung.
+        // 0.8.1: Waehrend einer Neuberechnung passen die _ran*-Merker (schon die neue Rechnung) nicht zum Ergebnis (noch das alte);
+        // das Minimum ueber diese Mischung sprang zwischen 0 und 1. Jetzt gilt bis zum Abschluss die letzte fertige Wertung.
         static void WertungNach(SpatialAudioOcclusionCombinedCalculator __instance, ref float __result)
         {
             if (!An) return;
-            var r = __instance.LastAggregateResult;
-            float min = 2f;
-            if (__instance._ranTransmission) min = Mathf.Min(min, r.transmissionScore);
-            if (__instance._ranDiffraction) min = Mathf.Min(min, r.diffractionScore);
-            if (__instance._ranReflection) min = Mathf.Min(min, r.reflectionScore);
-            if (min <= 1f) __result = Mathf.Clamp01(min);
+            try
+            {
+                var r = __instance.LastAggregateResult;
+                bool t = __instance._ranTransmission, d = __instance._ranDiffraction, rr = __instance._ranReflection;
+                var schritt = __instance._combinedStep;
+                bool fertig = schritt == SpatialAudioOcclusionCombinedCalculator.ECombinedStep.Complete
+                              || schritt == SpatialAudioOcclusionCombinedCalculator.ECombinedStep.Idle;
+                var z = FertigTab.GetValue(__instance, FertigNeu);
+                float stetig = Stetigkeit.Waehlen(fertig, t, d, rr, r.transmissionScore, r.diffractionScore, r.reflectionScore,
+                                                  ref z.Gemerkt, ref z.Letzte, out bool gehalten);
+                if (Stetigkeit.An)
+                {
+                    __result = stetig;
+                    Stetigkeit.Gerechnet++;
+                    if (gehalten) Stetigkeit.Gehalten++;
+                }
+                else
+                {
+                    // 0.8.0 (nur zum Vergleich): Minimum ueber die aktuellen Merker
+                    float min = 2f;
+                    if (t) min = Mathf.Min(min, r.transmissionScore);
+                    if (d) min = Mathf.Min(min, r.diffractionScore);
+                    if (rr) min = Mathf.Min(min, r.reflectionScore);
+                    if (min <= 1f) __result = Mathf.Clamp01(min);
+                }
+            }
+            catch (Exception e) { Statistik.Fehler(e); }
+        }
+
+        static void ResetNach(SpatialAudioOcclusionCombinedCalculator __instance)
+        {
+            try { if (FertigTab.TryGetValue(__instance, out var z)) z.Gemerkt = false; }
+            catch (Exception e) { Statistik.Fehler(e); }
         }
 
         internal static void Loggen()
         {
+            if (Stetigkeit.Gerechnet + Stetigkeit.Geglaettet + Stetigkeit.SofortGelassen > 0)
+            {
+                Plugin.Log.LogInfo($"[Diagnostics] Steady occlusion: {Stetigkeit.Gehalten} of {Stetigkeit.Gerechnet} path scores held from the last finished calculation " +
+                                   $"(0.8.0 would have mixed old and new there), {Stetigkeit.Geglaettet} filter jumps of playing sounds turned into glides, " +
+                                   $"{Stetigkeit.SofortGelassen} set at once (new/silent sounds).");
+                Stetigkeit.Gehalten = Stetigkeit.Gerechnet = Stetigkeit.Geglaettet = Stetigkeit.SofortGelassen = 0;
+            }
             if (!An || Lautstaerken == 0) return;
             Plugin.Log.LogInfo($"[Diagnostics] Physics mode: {Lautstaerken} volume updates (mean -{SummeDb / Lautstaerken:F1} dB), {Filter} low-pass updates.");
             Lautstaerken = Filter = 0; SummeDb = 0;

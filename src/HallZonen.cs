@@ -87,6 +87,9 @@ namespace Materialklang
             public Box Box;
             public float Volumen, VzuS;
             public int Treffer;
+            public bool Angelegt;                 // fuer das Klang-Log: es gibt eine Zone fuer diesen Raum
+            public float DRt1k, DPegel1k;         // Verschiebung bei 1 kHz (s, dB) laut letzter Berechnung
+            public Quaternion Inv;
             public float[] Alpha = new float[Baender.Length];
         }
 
@@ -110,7 +113,7 @@ namespace Materialklang
             MaxZonen = cfg.Bind(sek, "Max zones", 400,
                 new ConfigDescription("Maximum number of reverb zones per raid (large rooms first).", new AcceptableValueRange<int>(0, 2000)));
             NurGroessteBox = cfg.Bind(sek, "Only largest box per room", true,
-                "A room often consists of several boxes. On: only the largest gets a zone (overlapping zones could add up). Off: one zone per box. Takes effect from the next raid.");
+                "A room often consists of several boxes. On: only the largest gets a zone (overlapping zones could add up). Off: one zone per box. Applies live (the rooms are measured again).");
             Diagnose = cfg.Bind(sek, "Diagnostics", true,
                 "Writes to the BepInEx log at raid start: zone count, measuring time and the 5 most extreme rooms (name, main material, change of reverb time at 1 kHz).");
 
@@ -120,7 +123,31 @@ namespace Materialklang
                 else if (daten != null) Anstehend(0f);
             };
             Staerke.SettingChanged += (_, __) => { if (Aktiv.Value && daten != null) Anstehend(0f); };
+            // live: andere Boxauswahl -> neu messen (die Raumliste bleibt bis Raidende erhalten)
+            NurGroessteBox.SettingChanged += (_, __) => { if (Aktiv.Value && raeume != null) { daten = null; Anstehend(0f); } };
             MaxZonen.SettingChanged += (_, __) => { if (Aktiv.Value && daten != null) Anstehend(0f); };
+        }
+
+        /// <summary>Klang-Log: Hall-Verschiebung (1 kHz) der Zone, in der der Punkt liegt. Kleinste passende Box gewinnt.</summary>
+        internal static bool Finde(Vector3 p, out string name, out float rt, out float db)
+        {
+            name = null; rt = db = 0f;
+            if (zonenAktiv == 0 || daten == null) return false;
+            RaumDaten best = null;
+            for (int i = 0; i < daten.Count; i++)
+            {
+                var d = daten[i];
+                if (!d.Angelegt) continue;
+                Vector3 v = p - d.Box.Mitte;
+                float r = d.Box.Halb.magnitude;
+                if (v.sqrMagnitude > r * r) continue;
+                Vector3 l = d.Inv * v;
+                if (Mathf.Abs(l.x) > d.Box.Halb.x || Mathf.Abs(l.y) > d.Box.Halb.y || Mathf.Abs(l.z) > d.Box.Halb.z) continue;
+                if (best == null || d.Volumen < best.Volumen) best = d;
+            }
+            if (best == null) return false;
+            name = best.Name; rt = best.DRt1k; db = best.DPegel1k;
+            return true;
         }
 
         static void Anstehend(float verzoegerung)
@@ -359,6 +386,7 @@ namespace Materialklang
             var dRt = new float[Baender.Length];
             var dPegel = new float[Baender.Length];
             var kandidaten = daten.OrderByDescending(x => x.Volumen).Take(max).ToList();
+            foreach (var x in daten) x.Angelegt = false;
 
             wurzel = new GameObject("Materialklang_Hallzonen");
             UnityEngine.Object.DontDestroyOnLoad(wurzel);
@@ -368,7 +396,9 @@ namespace Materialklang
             {
                 Korrektur(d, staerke, dRt, dPegel);
                 extrem.Add((d.Name, d.Dominant, dRt[Band1k], d.Alpha[Band1k], d.Volumen));
-                if (ZoneAnlegen(d, dRt, dPegel)) ok++; else fehl++;
+                d.DRt1k = dRt[Band1k]; d.DPegel1k = dPegel[Band1k]; d.Inv = Quaternion.Inverse(d.Box.Drehung);
+                d.Angelegt = ZoneAnlegen(d, dRt, dPegel);
+                if (d.Angelegt) ok++; else fehl++;
             }
             zonenAktiv = ok;
             sw.Stop();
@@ -438,7 +468,7 @@ namespace Materialklang
     {
         static void Postfix(AudioRoomStorage __instance)
         {
-            try { HallZonen.RaeumeMelden(__instance._validSpatialAudioRooms); }
+            try { HallZonen.RaeumeMelden(__instance._validSpatialAudioRooms); KlangLog.RaidStart(); }
             catch (Exception ex) { Statistik.Fehler(ex); }
         }
     }
@@ -449,7 +479,7 @@ namespace Materialklang
     {
         static void Prefix()
         {
-            try { HallZonen.Leeren(); }
+            try { HallZonen.Leeren(); KlangLog.RaidEnde(); }
             catch (Exception ex) { Statistik.Fehler(ex); }
         }
     }

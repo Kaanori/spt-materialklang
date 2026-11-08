@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Audio.SpatialSystem;
 using Audio.SpatialSystem.SpatialAudioCalculator;
 using Audio.SpatialSystem.SpatialAudioCalculator.Data;
@@ -19,7 +20,8 @@ namespace Materialklang
     public enum Gruppe
     {
         ConcreteStone, Soil, GravelSnow, MetalThick, MetalThin, WoodThick, WoodThin,
-        Glass, Soft, GridFenceGrass, Body, Water, Unknown, Door
+        Glass, Soft, GridFenceGrass, Body, Water, Unknown, Door,
+        Snow   // ab 0.6.0 eigene Gruppe (vorher bei Kies); steht am Ende, damit die Nummern der F12-Abschnitte gleich bleiben
     }
 
     [BepInPlugin("kaan.materialklang", "Materialklang", Plugin.Version)]
@@ -27,13 +29,13 @@ namespace Materialklang
     [BepInDependency("red.soundenginebackport", BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
-        public const string Version = "0.5.0";
+        public const string Version = "0.8.1";
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Aktiv;
         internal static ConfigEntry<bool> Diagnose;
         internal static ConfigEntry<float> Gesamtstaerke;
         internal static ConfigEntry<float> FreiwegSchwelle;
-        internal const int AnzahlGruppen = 14;
+        internal const int AnzahlGruppen = 15;
         internal static readonly ConfigEntry<float>[] Dicke = new ConfigEntry<float>[AnzahlGruppen];
         internal static readonly ConfigEntry<float>[] Oberflaeche = new ConfigEntry<float>[AnzahlGruppen];
 
@@ -43,7 +45,7 @@ namespace Materialklang
         {
             (Gruppe.ConcreteStone,     "Concrete, Stone, Tile, Asphalt",      5.0f, 0.30f),
             (Gruppe.Soil,           "Soil, Mud, Terrain",             3.0f, 0.20f),
-            (Gruppe.GravelSnow,     "Gravel, Pebbles, Snow",              2.0f, 0.10f),
+            (Gruppe.GravelSnow,     "Gravel, Pebbles",                    2.0f, 0.10f),
             (Gruppe.MetalThick,     "Thick Metal (Container, Steel Door)",1.0f, 0.80f),
             (Gruppe.MetalThin,    "Thin Metal (Car, Corrugated Sheet)",    0.8f, 0.35f),
             (Gruppe.WoodThick,       "Thick Wood (Wall, Beam)",          2.0f, 0.25f),
@@ -55,6 +57,7 @@ namespace Materialklang
             (Gruppe.Water,         "Water",                              1.0f, 0.10f),
             (Gruppe.Unknown,      "Unknown (like vanilla)",             0.3f, 0.00f),
             (Gruppe.Door,           "Doors (game object, base value)",     0.0f, 0.60f),
+            (Gruppe.Snow,           "Snow",                                2.0f, 0.10f),   // Schieberwerte wie bisher bei Kies/Schnee
         };
 
         void Awake()
@@ -62,11 +65,12 @@ namespace Materialklang
             Log = Logger;
             Einstellungen.Anlegen(Config);
             if (Einstellungen.Migriert > 0)
-                Log.LogInfo($"Settings: {Einstellungen.Migriert} values carried over from the German names of version 0.4.0.");
+                Log.LogInfo($"Settings: {Einstellungen.Migriert} values carried over from older versions (0.4.0 German names / 0.5.0 names).");
+            LiveStart.Awake(Config);   // Klang-Log + Live-Einstellung (aus, solange sie nicht in F12 eingeschaltet sind)
             SceneManager.activeSceneChanged += (_, __) =>
             {
                 MaterialCache.Leeren(); BotHoeren.Leeren(); HallZonen.SzeneGewechselt();
-                TuerenFenster.Leeren(); WandZwischenRaeumen.Leeren();
+                TuerenFenster.Leeren(); WandZwischenRaeumen.Leeren(); KlangLog.SzeneGewechselt();
             };
             var h = new Harmony("kaan.materialklang");
             h.PatchAll(typeof(Plugin).Assembly);
@@ -75,10 +79,16 @@ namespace Materialklang
             WandZwischenRaeumen.Anwenden(h);
             SebAkustik.Anwenden(h);
             Physik.Anwenden(h);
+            FilterGleiten.Anwenden(h);
+            Wetter.Anwenden(h);
+            KlangLog.Anwenden(h);
             Log.LogInfo($"Materialklang {Version} (beta) loaded.");
         }
 
-        void Update() { HallZonen.Tick(); Statistik.VielleichtLoggen(); }
+        void Update() { HallZonen.Tick(); Statistik.VielleichtLoggen(); LiveStart.Tick(); Wetter.Tick(); Wald.Tick(); }
+
+        void OnApplicationQuit() { KlangLog.Beenden(); }
+        void OnDestroy() { KlangLog.Beenden(); }
     }
 
     internal static class MaterialCache
@@ -116,8 +126,10 @@ namespace Materialklang
                     return Gruppe.ConcreteStone;
                 case MaterialType.Soil: case MaterialType.SoilForest: case MaterialType.Mud: case MaterialType.Swamp:
                     return Gruppe.Soil;
-                case MaterialType.Gravel: case MaterialType.Pebbles: case MaterialType.Snow:
+                case MaterialType.Gravel: case MaterialType.Pebbles:
                     return Gruppe.GravelSnow;
+                case MaterialType.Snow:
+                    return Gruppe.Snow;
                 case MaterialType.MetalThick: case MaterialType.MetalNoDecal: case MaterialType.GarbageMetal:
                     return Gruppe.MetalThick;
                 case MaterialType.MetalThin:
@@ -171,6 +183,8 @@ namespace Materialklang
                 bool gueltig = false;
                 bool farbe = Farbe.Aktiv;
                 var fs = new FarbeSumme();
+                TransInfo ti = KlangLog.An ? KlangLog.TransHole(__instance) : null;   // nur bei eingeschaltetem Klang-Log
+                if (ti != null) ti.Beginn(n);
 
                 for (int i = 0; i < n; i++)
                 {
@@ -178,7 +192,7 @@ namespace Materialklang
                     int ia = a.colliderInstanceID, ib = b.colliderInstanceID;
                     bool ha = ia != 0 && a.distance < maxD, hb = ib != 0 && b.distance < maxD;
                     float e, th;
-                    if (!ha && !hb) { e = 1f; th = 0f; if (farbe) fs.Frei(); }
+                    if (!ha && !hb) { e = 1f; th = 0f; if (farbe) fs.Frei(); if (ti != null) ti.FreierStrahl(); }
                     else if (ha != hb || ia != ib) continue;          // wie Vanilla: kein Durchgang
                     else
                     {
@@ -186,9 +200,11 @@ namespace Materialklang
                         if (th >= maxT) continue;                      // wie Vanilla: zu dick
                         int m = MaterialCache.Get(ia);
                         float x = Plugin.Oberflaeche[m].Value + (th >= minT ? Plugin.Dicke[m].Value * th : 0f);
-                        e = physik ? Physik.EnergieAusDb(Physik.Daemmung(m, th)) : Mathf.Clamp01(Mathf.Exp(-x * staerke));
+                        float dbp = physik ? Physik.Daemmung(m, th) : x * staerke * 4.3429f;   // dB dieses Stuecks
+                        e = physik ? Physik.EnergieAusDb(dbp) : Mathf.Clamp01(Mathf.Exp(-x * staerke));
                         if (farbe) fs.Add(m, x * staerke);
                         Statistik.Treffer(m);
+                        if (ti != null) ti.Treffer(ia, m, th, dbp);
                     }
                     gueltig = true;
                     sumE += e;
@@ -214,17 +230,44 @@ namespace Materialklang
     }
 
     // Optional: Schwelle, ab der ein Weg als "frei" gilt, im Client ueberschreiben.
+    // Seit 0.6.0 live: die Rechner werden (schwach) mitgefuehrt und bei jeder Aenderung der Einstellung neu gesetzt.
     [HarmonyPatch]
     internal static class FreiwegPatch
     {
+        sealed class Merk { public float Orig; }
+        static readonly ConditionalWeakTable<SpatialAudioOcclusionCombinedCalculator, Merk> Original =
+            new ConditionalWeakTable<SpatialAudioOcclusionCombinedCalculator, Merk>();
+        static readonly List<WeakReference<SpatialAudioOcclusionCombinedCalculator>> Alle =
+            new List<WeakReference<SpatialAudioOcclusionCombinedCalculator>>();
+
         static IEnumerable<MethodBase> TargetMethods() =>
             AccessTools.GetDeclaredConstructors(typeof(SpatialAudioOcclusionCombinedCalculator)).Cast<MethodBase>();
 
         static void Postfix(SpatialAudioOcclusionCombinedCalculator __instance)
         {
+            if (!Original.TryGetValue(__instance, out _))
+            {
+                Original.Add(__instance, new Merk { Orig = __instance._minClearPathScore });
+                Alle.Add(new WeakReference<SpatialAudioOcclusionCombinedCalculator>(__instance));
+            }
+            Setzen(__instance);
+        }
+
+        static void Setzen(SpatialAudioOcclusionCombinedCalculator c)
+        {
             float v = Plugin.FreiwegSchwelle.Value;
-            if (Physik.An) __instance._minClearPathScore = Physik.Freiweg.Value;
-            else if (v >= 0f) __instance._minClearPathScore = v;
+            float orig = Original.TryGetValue(c, out var m) ? m.Orig : 0.5f;
+            c._minClearPathScore = (Physik.An) ? Physik.Freiweg.Value : (v >= 0f ? v : orig);
+        }
+
+        // nach einer Aenderung der Schwellen: alle lebenden Rechner neu setzen
+        internal static void AlleNeu()
+        {
+            for (int i = Alle.Count - 1; i >= 0; i--)
+            {
+                if (Alle[i].TryGetTarget(out var c)) Setzen(c);
+                else Alle.RemoveAt(i);
+            }
         }
     }
 
@@ -275,6 +318,7 @@ namespace Materialklang
             if (!Plugin.Diagnose.Value || Time.realtimeSinceStartup < naechsterLog) return;
             naechsterLog = Time.realtimeSinceStartup + 30f;
             SebAkustik.Loggen();
+            Wald.Loggen();
             Physik.Loggen();
             TuerenFenster.DiagnoseLoggen();
             WandZwischenRaeumen.DiagnoseLoggen();

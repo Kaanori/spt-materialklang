@@ -11,7 +11,7 @@
     <TargetFramework>net471</TargetFramework>
     <AssemblyName>Materialklang</AssemblyName>
     <RootNamespace>Materialklang</RootNamespace>
-    <Version>0.5.0-beta</Version>
+    <Version>0.8.1-beta</Version>
     <LangVersion>latest</LangVersion>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
@@ -34,6 +34,7 @@
     <Reference Include="Assembly-CSharp" Publicize="true"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/UnityEngine.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.CoreModule"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.AudioModule"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/UnityEngine.AudioModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.PhysicsModule"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/UnityEngine.PhysicsModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.TerrainPhysicsModule"><HintPath>$(GameDir)/EscapeFromTarkov_Data/Managed/UnityEngine.TerrainPhysicsModule.dll</HintPath><Private>false</Private></Reference>
     <!-- Mod-DLLs: nur zum Bauen. Zur Laufzeit sind SEB und SAIN optional (BepInDependency SoftDependency). -->

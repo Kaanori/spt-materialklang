@@ -19,10 +19,11 @@ namespace Materialklang
             Plugin.Gesamtstaerke = c.Bind("1. General", "Overall strength", 1.0f,
                 new ConfigDescription("Multiplies all material values.", new AcceptableValueRange<float>(0f, 3f)));
             Plugin.FreiwegSchwelle = c.Bind("1. General", "Clear-path threshold", -1f,
-                new ConfigDescription("Up to which occlusion a path counts as clear (vanilla 0.5). -1 = game value. Smaller = even glass/thin wood attenuate slightly. Takes effect from the next raid. Ignored while Physics Mode is on (it has its own threshold).",
+                new ConfigDescription("Up to which occlusion a path counts as clear (vanilla 0.5). -1 = game value. Smaller = even glass/thin wood attenuate slightly. Applies live. Ignored while Physics Mode is on (it has its own threshold).",
                     new AcceptableValueRange<float>(-1f, 1f)));
             Plugin.Diagnose = c.Bind("1. General", "Diagnostic log", true,
                 "Writes a summary to the BepInEx log every 30 s (material hits, vanilla vs. new values).");
+            Stetigkeit.Binden(c);
 
             foreach (var (g, name, k, s) in Plugin.Startwerte)
             {
@@ -40,6 +41,8 @@ namespace Materialklang
             HallZonen.Binden(c);
             TuerenFenster.Binden(c);
             WandZwischenRaeumen.Binden(c);
+            KlangLog.Binden(c);
+            Wald.Binden(c);
 
             // Einmalig: Werte aus den alten deutschen Namen uebernehmen.
             Migriert = Einstellungsumzug.Uebernehmen(c, vorher);

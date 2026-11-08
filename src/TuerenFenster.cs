@@ -35,7 +35,7 @@ namespace Materialklang
         {
             const string s = "4. Doors and Windows";
             Aktiv = c.Bind(s, "Enabled", true,
-                "Doors and windows attenuate by material and state (off = vanilla: a closed door is always the same). Changed values take effect from the next raid.");
+                "Doors and windows attenuate by material and state (off = vanilla: a closed door is always the same). Changed values apply live.");
             var bereich = new AcceptableValueRange<float>(0f, 0.95f);
             HolzDuenn = c.Bind(s, "Door thin wood", 0.35f,
                 new ConfigDescription("How much sound a closed door made of thin wood absorbs (0 = none, 0.95 = almost all).", bereich));

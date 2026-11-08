@@ -49,6 +49,22 @@ namespace Materialklang
 		{
 			List<Zeile> l = new List<Zeile>();
 
+			// ---- 0.5.0 -> 0.6.0 (englische Namen, die sich geaendert haben) - stehen VOR den deutschen Zeilen,
+			// denn wer schon 0.5.0 lief, hat dort die neueren Werte (der erste Treffer gewinnt) ----
+			// Kies und Schnee waren eine Gruppe: Kies behaelt die Werte, Schnee uebernimmt die Schieberwerte (Daempfung/Grund),
+			// Dichte und Massiv-Dicke von Schnee sind neu (kein Uebertrag).
+			A(l, "2. 03 Gravel, Pebbles, Snow", "2. 03 Gravel, Pebbles",
+				"Attenuation per meter", "Attenuation per meter",
+				"Base attenuation", "Base attenuation");
+			A(l, "2. 03 Gravel, Pebbles, Snow", "2. 15 Snow",
+				"Attenuation per meter", "Attenuation per meter",
+				"Base attenuation", "Base attenuation");
+			A(l, "0. Physics Mode (real values)", "0. Physics Mode (real values)",
+				"Density 03 Gravel/Snow (kg/m3)", "Density 03 Gravel/Pebbles (kg/m3)",
+				"Solid up to 03 Gravel/Snow (m)", "Solid up to 03 Gravel/Pebbles (m)");
+			A(l, "8. Air Absorption", "8. Air Absorption",
+				"Humidity", "Air clarity factor");   // gleicher Faktor auf die Grenzfrequenz, nur neuer (korrekter) Name
+
 			A(l, "1. Allgemein", "1. General",
 				"Aktiv", "Enabled",
 				"Gesamtstaerke", "Overall strength",
@@ -66,7 +82,7 @@ namespace Materialklang
 			};
 			string[] gruppeNeu =
 			{
-				"Concrete, Stone, Tile, Asphalt", "Soil, Mud, Terrain", "Gravel, Pebbles, Snow",
+				"Concrete, Stone, Tile, Asphalt", "Soil, Mud, Terrain", "Gravel, Pebbles",
 				"Thick Metal (Container, Steel Door)", "Thin Metal (Car, Corrugated Sheet)", "Thick Wood (Wall, Beam)",
 				"Thin Wood (Board, Crate)", "Glass", "Soft (Cardboard, Fabric, Plastic, Rubber)",
 				"Grate, Chain-link Fence, Grass", "Body, Armor, Helmet", "Water",
@@ -78,6 +94,10 @@ namespace Materialklang
 					"Daempfung je Meter", "Attenuation per meter",
 					"Grunddaempfung", "Base attenuation");
 			}
+			// Schnee war in 0.4.0 Teil von "Kies, Schotter, Schnee": gleiche Schieberwerte wie Kies uebernehmen.
+			A(l, "2. 03 Kies, Schotter, Schnee", "2. 15 Snow",
+				"Daempfung je Meter", "Attenuation per meter",
+				"Grunddaempfung", "Base attenuation");
 
 			// 0. Physik-Modus: sechs feste Werte, dazu je Gruppe Dichte und Massiv-Dicke.
 			A(l, "0. Physik-Modus (reale Werte)", "0. Physics Mode (real values)",
@@ -89,7 +109,7 @@ namespace Materialklang
 				"Freiweg-Schwelle", "Clear-path threshold");
 			string[] physAlt = { "Beton/Stein", "Erde/Gelaende", "Kies/Schnee", "Metall dick", "Metall duenn", "Holz dick", "Holz duenn",
 				"Glas", "Weich", "Gitter/Zaun/Gras", "Koerper", "Wasser", "Unbekannt", "Tuerblatt" };
-			string[] physNeu = { "Concrete/Stone", "Soil/Terrain", "Gravel/Snow", "Metal thick", "Metal thin", "Wood thick", "Wood thin",
+			string[] physNeu = { "Concrete/Stone", "Soil/Terrain", "Gravel/Pebbles", "Metal thick", "Metal thin", "Wood thick", "Wood thin",
 				"Glass", "Soft", "Grate/Fence/Grass", "Body", "Water", "Unknown", "Door leaf" };
 			for (int i = 0; i < physAlt.Length; i++)
 			{
@@ -141,7 +161,7 @@ namespace Materialklang
 
 			A(l, "8. Luftdaempfung", "8. Air Absorption",
 				"Aktiv", "Enabled",
-				"Feuchte", "Humidity",
+				"Feuchte", "Air clarity factor",
 				"Schuss-Abzug", "Shot offset");
 
 			A(l, "9. Hall je Material", "9. Reverb by Material",
