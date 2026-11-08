@@ -399,7 +399,7 @@ Example (20 °C, 60 %, `Strength` 1, sound source in the distance given, the who
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md).
+See [CHANGELOG.md](https://github.com/Kaanori/spt-materialklang/blob/main/CHANGELOG.md).
 
 ## Building from source
 
@@ -423,4 +423,4 @@ Bugs and questions: [GitHub issues](https://github.com/Kaanori/spt-materialklang
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/Kaanori/spt-materialklang/blob/main/LICENSE).
