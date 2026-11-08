@@ -19,7 +19,7 @@ bug, please open an [issue](https://github.com/Kaanori/spt-materialklang/issues)
 
 ## Installation
 
-1. Download `Materialklang-0.8.1-beta.zip` from the [Releases](https://github.com/Kaanori/spt-materialklang/releases) page.
+1. Download `Materialklang-0.8.3-beta.zip` from the [Releases](https://github.com/Kaanori/spt-materialklang/releases) page.
 2. Extract it **into your SPT game folder** (the folder that contains `EscapeFromTarkov.exe`).
    The ZIP already has the right layout; the mod ends up in `BepInEx/plugins/`.
    On Windows, make sure "Extract All" does not add an extra subfolder.
@@ -41,7 +41,7 @@ It is an add-on for **Sound Engine Backport (SEB)** and is meant to be played to
 |---|---|
 | **Physics Mode** (on by default) | Real building acoustics: the insulation of a wall follows the *mass law* (heavier and thicker = quieter). Thick concrete is nearly silent, a plank is not. Applies to every sound with an obstacle in the way. |
 | **Material table** (sections `2.xx`) | The simpler, hand-tunable alternative to Physics Mode: attenuation per meter and base attenuation for 15 material groups. Used when Physics Mode is off. |
-| **Doors and windows** | A closed thin wooden door lets more through than a closed steel door; an intact window absorbs some sound, a broken one none; rows of windows count in proportion to their free area. |
+| **Doors and windows** | A closed thin wooden door lets more through than a closed steel door; an intact window absorbs some sound, a broken one none; for rows of windows the game itself accounts for how much of the row is broken. |
 | **Walls between rooms** | Vanilla only lets sound travel between rooms through doors and windows – the wall in between does not count. Materialklang also measures the straight line through the walls and uses whichever path is quieter, so a loud fight next door can come through the wall. |
 | **Timbre** | Materials filter highs and lows differently (concrete: dull but with a thump, wood: hollow). Only for sound through walls. |
 | **Weapon directivity** | Other people's gunshots are quieter and duller when the muzzle points away from you (less so indoors). Needs SEB. |
@@ -63,7 +63,7 @@ Every part has its own **Enabled** switch in the F12 menu. Switch off everything
 | **Settings** | `BepInEx/config/kaan.materialklang.cfg` (F12 menu, English labels) |
 | **License** | MIT |
 
-- **Sound Engine Backport (SEB)** – *recommended, not required* (soft dependency). Materialklang was built and tuned next to SEB 1.0.3. Without SEB, **weapon directivity** and the **air absorption of gunshots** switch off (the log says so); everything else (materials, doors, windows, walls, timbre, air absorption of other sounds, reverb) only touches the base game's own audio system. Running it *without* SEB has not been tested yet.
+- **Sound Engine Backport (SEB)** – *recommended, not required* (soft dependency). Materialklang was built and tuned next to SEB 1.0.3. With an SEB version other than 1.0.x the SEB parts stay off (log warning), and if SEB changes something Materialklang relies on, those parts switch themselves off for the session (log error) while shots keep playing normally. Without SEB, **weapon directivity** and the **air absorption of gunshots** switch off (the log says so); everything else (materials, doors, windows, walls, timbre, air absorption of other sounds, reverb) only touches the base game's own audio system. Running it *without* SEB has not been tested yet.
 - **SAIN** – optional, only for **bot hearing**, which is **off** by default. Tested with SAIN 4.5.1; with another version the log shows a warning. Without SAIN that section simply does nothing.
 - **Meta XR Audio** – not something you install: it is part of the game (`Meta.XR.Audio.dll`) and is what the game itself uses for room reverb. The reverb zones talk to it directly. If it is unavailable the zones are skipped and the rest keeps working.
 - It hooks into internal parts of the game's audio system, so a **game update can break parts of it**. Where a hook target is missing, Materialklang logs a warning and that part stays vanilla.
@@ -80,11 +80,11 @@ Sections and the most important settings with their defaults. All values have to
 | **2. 01 ... 15** (one per material group) | `Attenuation per meter`, `Base attenuation` – only used while Physics Mode is off |
 | **3. Bot Hearing (SAIN)** | `Mode` (**Off** / QuieterOnly / Replace); `Strength` (1.0); `Exponent` (0.5); floors for gunshot / suppressed shot / footsteps / other sounds; `Calculations per frame` (6) |
 | **4. Doors and Windows** | `Enabled` (on); `Door thin wood` (0.35); `Door thick wood` (0.45); `Door thin metal` (0.6); `Door thick metal` (0.8); `Window intact` (0.55) |
-| **5. Walls Between Rooms** | `Enabled` (on); `Max. distance (m)` (40); `Surcharge` (0.05); `Shell thickness (m)` (0.15) |
+| **5. Walls Between Rooms** | `Enabled` (on); `Max. distance (m)` (40); `Surcharge` (0.05); `Shell thickness (m)` (0.15 – single surfaces of solid groups; thin groups use their own thickness) |
 | **6. Timbre** | `Enabled` (on); `Strength` (1.0) – has no effect while Physics Mode is on |
 | **7. Weapon Directivity** | `Enabled` (on); `Rear side (dB)` (-4); `Rear low-pass (Hz)` (6000); `Indoor factor` (0.5) |
 | **8. Air Absorption** | `Enabled` (on); `Air clarity factor` (1.0; called `Humidity` before 0.6.0); `Shot offset` (1.0); `Use raid weather (ISO 9613-1)` (on); `Base humidity (%)` (60); `Show weather in log` (on) |
-| **9. Reverb by Material** | `Enabled` (on); `Strength` (1.0); `Max zones` (400); `Only largest box per room` (on); `Diagnostics` (on) |
+| **9. Reverb by Material** | `Enabled` (on); `Strength` (1.0); `Max zones` (400); `Only largest box per room` (on); `Min. absorption` (0.05); `Diagnostics` (on) |
 | **10. Advanced (rays)** | `Transmission rays x` (1); `Reflection rays x` (1); `Max. bounces` (0 = game value); `Energy kept per bounce` (0 = game value) |
 | **11. Sound log & live tuning** | `Sound log` (**off**); `Log radius (m)` (60); `Max. lines per source per second` (4); `Max. file size (MB)` (50); `Keep last raids` (10); `Mark odd sound key` (unbound); `Live tuning` (**off**) |
 | **12. Forest** | `Enabled` (on); `Strength` (1.0); `Density threshold (trees per 100 m2)` (3); `Show forest in sound log` (on) |
@@ -121,7 +121,7 @@ A line looks like this (one line, wrapped here):
 - `SEB …` appears for Sound Engine Backport gunshots (directivity and air absorption values); `reverb` shows the control zone (Reverb by Material) around the source and around you, as change of reverb time and level at 1 kHz.
 - Settings in effect are written at the top of each file, and every live change is written as a `[Live]` line, so a log is self-explanatory.
 
-**Mark odd sound:** bind `Mark odd sound key` (unbound by default) and press it when something sounds wrong; a `=== MARK n === 14:32:09.480 t=… listener=(x, y, z)` line goes into the log so the moment is easy to find.
+**Mark odd sound:** bind `Mark odd sound key` (unbound by default) and press it when something sounds wrong; a `=== MARK n === 14:32:09.480 t=… listener=(x, y, z)` line goes into the log so the moment is easy to find. A short ding confirms the mark (an error sound means the sound log is off).
 
 ### Live tuning
 
@@ -150,6 +150,7 @@ Switch on `Live tuning`. The plugin creates `BepInEx/config/kaan.materialklang.l
 - **Maps.** The reverb measurement relies on the game's interior rooms (about 400 zones at most per raid); open or unusual rooms may be skipped.
 - **No material data for some surfaces.** Anything the game does not tag with a material counts as "Unknown" and behaves like vanilla.
 - **Sounds that get a new occlusion container** (for example some environment and one-shot sounds) start before the game's asynchronous ray calculation has a result, so their first moment can be less muffled than the rest; since 0.8.1 the correction glides instead of jumping. Bot footsteps, gear and voices use a container per bot and are not affected.
+- **Volume steps at indoor/outdoor changes.** When you or a bot step between indoors and outdoors, the game switches its indoor/outdoor factor at once (e.g. a door path score of 0.34 becomes 0.68), so the volume of that sound can change by about 10 dB within one update. This is the game's behaviour (in Physics Mode more audible than in vanilla); Materialklang does not smooth it yet.
 - **Game updates** can break hooks (see above).
 
 ## Physics and sources
@@ -235,16 +236,21 @@ Densities 01, 04, 05, 08 are standard values (snow: handbook range [14]); the ot
 - **Loudness:** `volume factor = 10^(−dB × Loudness factor / 20)` – the standard conversion from a level difference in dB to a sound-pressure (amplitude) factor [2].
 - **Loudness factor 0.2 is chosen by ear, not physics.** A real gunshot is far louder than headphones can play, so true-to-life insulation (factor 1.0) would make anything behind concrete silent. 0.2 compresses the real values into the range of game loudness.
 - **Muffling (low-pass):** the mass law rises 6 dB per octave, so a wall removes highs more than lows [1, 2]. The mapping `cut-off = 22 kHz × (800 Hz / 22 kHz)^score` (logarithmic, from open to fully insulated) is my own approximation, not a formula from the literature.
-- **The lightest path counts:** sound reaches you through the wall, around corners and via reflections at the same time. Parallel paths add up as energy, so the weakest barrier dominates – the same idea as flanking transmission in building acoustics [3]. Materialklang takes the *smallest* of the three occlusion scores instead of the game's average; using the minimum instead of a full energy sum is a simplification.
+- **The lightest path counts:** sound reaches you through the wall, around corners and via reflections at the same time. Parallel paths add up as energy, so the weakest barrier dominates – the same idea as flanking transmission in building acoustics [3]. Materialklang takes the *smallest* of the three occlusion scores instead of the game's average; using the minimum instead of a full energy sum is a simplification. Known limit: in Physics Mode the transmission score is a dB scale (score = dB / 60), while the diffraction and reflection scores are the game's own heuristics on a 0..1 scale – the minimum compares numbers of different origin. There is no calibration curve for them (no measurements to fit one to).
+- **One value per sound:** the game keeps one occlusion value per occluder, but multiplies it with an indoor/outdoor factor that depends on the sound group (character sounds 2.0, weapon sounds 1.5 in the logs). Between full updates the game re-applies the stored volume of every sound but recalculated the low-pass from the value of whichever sound was calculated *last* – the footsteps of a bot got the weapon's value every few frames (in Physics Mode one octave of low-pass back and forth). Since 0.8.3 every sound keeps its own value, so its low-pass and its volume always come from the same calculation.
 
 ### 4. Doors and windows
 
-The defaults (`Door thin wood` 0.35, `thick wood` 0.45, `thin metal` 0.6, `thick metal` 0.8, `Window intact` 0.55) are scores on the same scale as Physics Mode (score × 60 dB), i.e. about 21, 27, 36, 48 and 33 dB before the loudness factor. They are **set by hand** for a plausible order (wood < glass < steel), not taken from measurements of particular doors; real doors are often limited by the gaps around them. A row of windows counts in proportion to its open area (open area lets sound through unhindered) – a simple area weighting.
+The defaults (`Door thin wood` 0.35, `thick wood` 0.45, `thin metal` 0.6, `thick metal` 0.8, `Window intact` 0.55) are scores on the same scale as Physics Mode (score × 60 dB), i.e. about 21, 27, 36, 48 and 33 dB before the loudness factor. They are **set by hand** for a plausible order (wood < glass < steel), not taken from measurements of particular doors; real doors are often limited by the gaps around them. For a row of windows with broken panes the game itself already uses the size and cost of the broken part for the path; since 0.8.3 Materialklang no longer adds the remaining glass a second time (the opening dominates anyway, it is a parallel path).
 
 ### 5. Walls between rooms and bot hearing
 
-- **Walls between rooms** use the same mass law (section 1) for each wall piece on the straight line, or the material table when Physics Mode is off. Single surfaces without a back face count as a shell of 0.15 m; pieces over 1.5 m count as two shells (assumption about the game's meshes).
-- **Bot hearing (SAIN):** the energy that passes the walls is turned into a hearing-range factor with the exponent 0.5 (square root). That follows from spherical spreading: sound pressure falls with 1/distance (−6 dB per doubling of distance), so the distance at which a sound is still heard scales with the amplitude factor, i.e. the square root of the energy factor [2]. The floors per sound type (0.35 / 0.25 / 0.15 / 0.2) are game-balance values, chosen by hand.
+- **Walls between rooms** use the same mass law (section 1) for each wall piece on the straight line, or the material table when Physics Mode is off. Five lines are measured (one centre line, four offset by 0.25 m), each with a ray in both directions (at most 8 hits per ray).
+  - **Single surfaces** without a back face (one-sided meshes) get a typical thickness of their group: metal sheet 2 mm, thick metal 10 mm, glass 6 mm, soft (posters, plastic, cardboard) 5 mm, thin wood 12 mm, thick wood and door leaves 40 mm. Solid groups (concrete/stone, soil, gravel, water, snow, unknown) count as one shell of `Shell thickness` (0.15 m) – there the surface is usually one side of a slab or wall (e.g. a road above an underground car park). These thicknesses are assumptions about typical building parts, not measurements. Up to 0.8.2 every single surface counted as 0.15 m, so a poster weighed like 15 cm of wall (about 40 dB). Pieces over 1.5 m count as two shells (assumption about the game's meshes).
+  - **Full rays:** a ray with 8 hits has not seen the rest of the line, but the ray from the other end may have. A line is only unknown if both rays are full and their seen ranges leave a gap; then it counts as blocked only if what was seen already reaches the 60 dB cap, otherwise it is left out. Up to 0.8.2 any full ray made the line "blocked" – in a Sandbox log 201 of 230 lines, so the wall never won against the door path.
+  - **Offset lines** that start inside geometry (for example under the pavement the source stands on, or behind the wall you lean against) are left out when the centre line has no surface near that end; the remaining lines share their weight. If no line says anything, the game's door path applies.
+- **Bot hearing (SAIN)** uses the same single-surface thicknesses (its `Default thickness` is the shell for solid groups).
+- **Bot hearing (SAIN) – range:** the energy that passes the walls is turned into a hearing-range factor with the exponent 0.5 (square root). That follows from spherical spreading: sound pressure falls with 1/distance (−6 dB per doubling of distance), so the distance at which a sound is still heard scales with the amplitude factor, i.e. the square root of the energy factor [2]. The floors per sound type (0.35 / 0.25 / 0.15 / 0.2) are game-balance values, chosen by hand.
 
 ### 6. Air absorption
 
@@ -321,12 +327,15 @@ The low/high weights per material (e.g. concrete: highs ×1.5, lows ×0.6) that 
 The reverb time of a room depends on its volume and on how much its surfaces absorb. Materialklang uses *Sabine's formula* in SI units [9, 10]:
 
 ```
-T60 = 0.161 · V / (S · α)          V = room volume (m³), S = surface (m²), α = mean absorption coefficient
+T60 = 0.161 · V / (S · α + 4·m·V)  V = room volume (m³), S = surface (m²), α = mean absorption coefficient, m = air attenuation (1/m)
 ```
 
 - The game's baked room data treat every surface as α = 0.1 (found in the game's own data). Materialklang measures the real wall materials of each room with 64 evenly spread rays, averages α per band (125 Hz … 4 kHz) and sends the **difference** to the game's reverb as a Meta XR *control zone*:
-  `ΔT60 = 0.161 · V/S · (1/α − 1/0.1)`, clamped to −0.8 … +1.5 s.
-- **Reverb level:** in a diffuse sound field the reverberant level is proportional to `10·log10(4 / (S·α))` [2, 10], so the level change is `10·log10(0.1 / α)`, clamped to ±6 dB.
+  `ΔT60 = T60(max(α, α_min)) − T60(0.1)`, clamped to −0.8 … +1.5 s.
+- **Minimum absorption** (`Min. absorption`, default 0.05): the rays only see wall surfaces, but openings, furniture, gaps and clutter absorb too. The mean α is therefore never taken below 0.05, which means a room never rings longer than twice the game's baked reverb. This is an assumption, not a measured value. Up to 0.8.2 there was no such floor: bare concrete (α 0.02) gave +4 … +5 s for almost every room, so nearly every concrete room sat at the +1.5 s clamp and rooms of different size sounded the same.
+- **Air absorption in the room** (the `4·m·V` term, as in ISO 354 [17]): m from ISO 9613-1 [7] at 20 °C, 50 % humidity and 101.325 kPa (typical room conditions), the same for the baked and the new reverb time. It matters in large halls and at high frequencies (m ≈ 0.007 /m at 4 kHz, 0.001 /m at 1 kHz).
+- **Reverb level:** in a diffuse sound field the reverberant level is proportional to `10·log10(4 / A)` with the equivalent absorption area `A = S·α + 4·m·V` [2, 10], so the level change is `10·log10(A_baked / A_new)` (at most +3 dB with the 0.05 floor), clamped to ±6 dB.
+- The `[Reverb]` log line at raid start reports how many rooms still reach the +1.5 s clamp.
 - Sabine's formula overestimates reverb in strongly absorbing ("dead") rooms; Eyring's formula is the usual refinement there [11]. It is not used here: for hard walls (small α, e.g. concrete, metal, tile) – the common case indoors – the two formulas differ only slightly.
 - **Absorption coefficients α per material and frequency are game data:** they come from an unused material table that ships with EFT (26 materials). Battlestate Games does not document where they come from; several rows look like the classic values found in room-acoustics tables (concrete, glass, fabric), but they are cited here as game data, not as a measurement source. The clamps are chosen by ear.
 
@@ -388,6 +397,7 @@ Example (20 °C, 60 %, `Strength` 1, sound source in the distance given, the who
 14. Typical snow densities (fresh snow roughly 100–300 kg/m³, settled/packed snow roughly 300–500 kg/m³): standard figures from snow science and avalanche handbooks; no single table is cited.
 15. ISO 9613-2:1996 – *Acoustics – Attenuation of sound during propagation outdoors – Part 2: General method of calculation*, annex A.2 (attenuation by foliage), table A.1. (A 2024 edition exists.)
 16. Datakustik, CadnaA documentation, "Built-Up Areas and Foliage" (https://doku.datakustik.com/CadnaA/en/BebaungBewuchs.html) – reproduces the foliage table of ISO 9613-2; used to check the numbers because the standard itself was not available to me.
+17. ISO 354:2003 – *Acoustics – Measurement of sound absorption in a reverberation room* (Sabine formula with the air term 4mV).
 
 ## Credits
 

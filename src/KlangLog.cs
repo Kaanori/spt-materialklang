@@ -43,6 +43,7 @@ namespace Materialklang
         static readonly Dictionary<int, string> colNamen = new Dictionary<int, string>(256);
         static readonly Dictionary<int, string> quellNamen = new Dictionary<int, string>(128);
         static readonly Dictionary<int, string> besitzerNamen = new Dictionary<int, string>(128);
+        static readonly Dictionary<object, string> raumNamen = new Dictionary<object, string>(128);
         static readonly Dictionary<string, string> klangTypen = new Dictionary<string, string>(256);
         static readonly Dictionary<Type, string> typNamen = new Dictionary<Type, string>();
         static readonly string[] gruppenTypen = Enum.GetNames(typeof(BetterAudio.AudioSourceGroupType));
@@ -112,7 +113,7 @@ namespace Materialklang
 
         internal static void SzeneGewechselt()
         {
-            colNamen.Clear(); quellNamen.Clear(); besitzerNamen.Clear(); sebWerte.Clear(); limiter.Leeren();
+            colNamen.Clear(); quellNamen.Clear(); besitzerNamen.Clear(); raumNamen.Clear(); sebWerte.Clear(); limiter.Leeren();
         }
 
         static void Schliessen()
@@ -170,7 +171,7 @@ namespace Materialklang
         /// <summary>Taste "Mark odd sound".</summary>
         internal static void Markieren()
         {
-            if (!An) { Plugin.Log.LogInfo("Sound log: MARK ignored - the sound log is off (F12 > 11. Sound log & live tuning)."); return; }
+            if (!An) { Plugin.Log.LogInfo("Sound log: MARK ignored - the sound log is off (F12 > 11. Sound log & live tuning)."); Ton(EFT.UI.EUISoundType.ErrorMessage); return; }
             if (!offen) DateiOeffnen();
             var e = schreiber.Holen();
             e.Art = LogArt.Marke; e.MarkNr = ++markNr; e.Uhr = DateTime.Now.Ticks; e.Spielzeit = Time.time; e.Bild = Time.frameCount;
@@ -179,6 +180,14 @@ namespace Materialklang
             if (lt != null) { var p = lt.position; e.PosX = p.x; e.PosY = p.y; e.PosZ = p.z; }
             schreiber.Einreihen(e);
             Plugin.Log.LogInfo($"Sound log: === MARK {markNr} ===");
+            Ton(EFT.UI.EUISoundType.QuestSubTrackComplete);
+        }
+
+        /// <summary>Kurzer Bestaetigungston der Spieloberflaeche (Marke gesetzt / Protokoll aus).</summary>
+        static void Ton(EFT.UI.EUISoundType art)
+        {
+            try { Comfort.Common.Singleton<EFT.UI.GUISounds>.Instance?.PlayUISound(art); }
+            catch (Exception e) { Statistik.Fehler(e); }
         }
 
         /// <summary>Aus dem Plugin-Update (einmal je Sekunde): Meldungen des Schreibers ausgeben.</summary>
@@ -240,8 +249,8 @@ namespace Materialklang
             e.Quelle = QuellName(source);
             var cont = occ.SourceContainer;
             e.Besitzer = cont != null ? BesitzerName(cont._parentTransform) : null;
-            e.QuellRaum = cont?.CurrentAudioRoom?.Name;
-            e.HoererRaum = occ.AudioSystem?.ListenerCurrentRoom?.Name;
+            e.QuellRaum = RaumName(cont?.CurrentAudioRoom);
+            e.HoererRaum = RaumName(occ.AudioSystem?.ListenerCurrentRoom);
 
             // ---- Weg und Hindernisse ----
             e.Propagation = occ.IsPropagationActive;
@@ -341,6 +350,18 @@ namespace Materialklang
             if (!typNamen.TryGetValue(ty, out var tn)) typNamen[ty] = tn = ty.Name;
             n = tn + "/" + s.name;
             quellNamen[id] = n;
+            return n;
+        }
+
+        // 0.8.3: ISpatialAudioRoom.Name ist in den Karten leer (wird nur im Editor gesetzt) -> Name des GameObjects, einmal je Raum.
+        static string RaumName(ISpatialAudioRoom r)
+        {
+            if (r == null) return null;
+            if (raumNamen.TryGetValue(r, out var n)) return n;
+            n = r.Name;
+            if (string.IsNullOrEmpty(n) && r is Component c && c != null) n = c.gameObject.name;
+            if (string.IsNullOrEmpty(n)) n = r.IsOutdoor ? "outdoor" : "?";
+            raumNamen[r] = n;
             return n;
         }
 

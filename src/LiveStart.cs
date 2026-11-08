@@ -15,6 +15,7 @@ namespace Materialklang
         static ConfigFile cfg;
         static LiveTuning live;
         static float naechsterLauf, auffrischenAb = -1f;
+        static Auffrischung offen;
 
         internal static string DateiPfad => Path.Combine(BepInEx.Paths.ConfigPath, LiveTuning.DateiName);
 
@@ -27,7 +28,7 @@ namespace Materialklang
             {
                 var e = a.ChangedSetting;
                 if (e.Definition.Section == KlangLog.Sek || e.Definition.Key == "Diagnostic log" || e.Definition.Key == "Diagnostics") return;
-                Anfordern();
+                Anfordern(AuffrischRegel.Fuer(e.Definition.Section, e.Definition.Key));
                 // Schwelle fuer "freier Weg" gilt live fuer die schon angelegten Rechner
                 if (ReferenceEquals(e, Plugin.FreiwegSchwelle) || ReferenceEquals(e, Physik.Freiweg)
                     || ReferenceEquals(e, Physik.Aktiv) || ReferenceEquals(e, Plugin.Aktiv)) FreiwegPatch.AlleNeu();
@@ -39,7 +40,7 @@ namespace Materialklang
         static void Starten(bool beimSpielstart)
         {
             live = new LiveTuning(cfg, DateiPfad, Info, Warn);
-            live.Angewendet = Anfordern;
+            // jede gesetzte Einstellung meldet sich ueber SettingChanged selbst (Anfordern dort, je nach Schluessel)
             live.Anlegen();
             int n = live.Start(beimSpielstart);
             Plugin.Log.LogInfo($"Live tuning: watching {live.Pfad} ({n} values applied).");
@@ -48,7 +49,12 @@ namespace Materialklang
         static void Info(string s) { Plugin.Log.LogInfo(s); KlangLog.Text(s); }
         static void Warn(string s) { Plugin.Log.LogWarning(s); KlangLog.Text(s); }
 
-        static void Anfordern() { auffrischenAb = Time.realtimeSinceStartup + 0.3f; }
+        static void Anfordern(Auffrischung was)
+        {
+            if (was == Auffrischung.Nichts) return;
+            offen |= was;
+            auffrischenAb = Time.realtimeSinceStartup + 0.3f;
+        }
 
         // Jeden Frame aus Plugin.Update
         internal static void Tick()
@@ -71,14 +77,17 @@ namespace Materialklang
             catch (Exception e) { Statistik.Fehler(e); }
         }
 
-        // Spielzustaende, die einen Wert zwischenspeichern, neu aufbauen lassen:
+        // Spielzustaende, die einen Wert zwischenspeichern, neu aufbauen lassen (0.8.3: nur, was die Einstellung betrifft, AuffrischRegel):
         //  - Tueren/Fenster: Zielwerte verwerfen und alle Portale neu setzen (das loest im Spiel auch eine Neuberechnung
-        //    aller Verdeckungen aus - dasselbe, was jede Tuer beim Oeffnen tut)
+        //    aller Verdeckungen aus - dasselbe, was jede Tuer beim Oeffnen tut); Materialzuordnung "Tuer" haengt am Schalter
         //  - Waende zwischen Raeumen: Messungen gelten als veraltet
         static void Auffrischen()
         {
+            var was = offen; offen = Auffrischung.Nichts;
+            if ((was & Auffrischung.Waende) != 0) WandZwischenRaeumen.Neu();
+            if ((was & Auffrischung.Portale) == 0) return;
             TuerenFenster.Leeren();
-            WandZwischenRaeumen.Neu();
+            MaterialCache.Leeren();
             if (SpatialAudioSystem.Initialized && DataProvider.TryGetData<SpatialAudioDataContainer>(out var d) && d != null)
                 d.UpdateInitialPortalsData();
         }

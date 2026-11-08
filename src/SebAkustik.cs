@@ -74,12 +74,18 @@ namespace Materialklang
         internal static ConfigEntry<float> Staerke;
         internal static bool Bereit;
 
-        public static bool Aktiv => Bereit && AktivCfg.Value && Staerke.Value > 0f;
+        // 0.8.3: im Physik-Modus aus - ComputeNach wendet die Klangfarbe dort nie an (der Tiefpass traegt die Neigung schon);
+        // bis 0.8.2 wurde sie trotzdem je Strahl gerechnet ("timbre 316 calculations, applied 0x").
+        public static bool Aktiv => Bereit && AktivCfg.Value && Staerke.Value > 0f && !Physik.An;
 
         static readonly ConditionalWeakTable<TransmissionCalculator, Klangfarbe> Tabelle =
             new ConditionalWeakTable<TransmissionCalculator, Klangfarbe>();
         static readonly ConditionalWeakTable<SpatialAudioOccluder, OccZustand> Zustaende =
             new ConditionalWeakTable<SpatialAudioOccluder, OccZustand>();
+        // 0.8.3: lief eine Endlos-Quelle beim letzten Blick schon? (nur Quellen, die einmal als Schleife gesehen wurden)
+        sealed class Lauf { public bool Spielte; }
+        static readonly ConditionalWeakTable<BetterSource, Lauf> Laeufe = new ConditionalWeakTable<BetterSource, Lauf>();
+        static readonly ConditionalWeakTable<BetterSource, Lauf>.CreateValueCallback LaufNeu = _ => new Lauf();
 
         // ---- Aufruf aus TransmissionPatch.Postfix ----
         public static void Setze(TransmissionCalculator c, in FarbeSumme s, bool gueltig)
@@ -149,7 +155,14 @@ namespace Materialklang
                 if (a == null) return;
                 bool jedesBild = q._isSubscribed && a.enabled && q.gameObject.activeInHierarchy;
                 bool spielt = jedesBild && a.isPlaying;
-                if (Stetigkeit.SofortZulassen(jedesBild, spielt, spielt ? a.time : 0f)) { Stetigkeit.SofortGelassen++; return; }
+                // 0.8.3: Endlos-Klaenge - lief die Quelle beim letzten Blick schon, ist time < 50 ms nur ein neuer Durchlauf
+                bool schleife = spielt && a.loop, schon = false;
+                if (schleife || Laeufe.TryGetValue(q, out _))
+                {
+                    var lz = Laeufe.GetValue(q, LaufNeu);
+                    schon = lz.Spielte; lz.Spielte = spielt;
+                }
+                if (Stetigkeit.SofortZulassen(jedesBild, spielt, spielt ? a.time : 0f, schleife, schon)) { Stetigkeit.SofortGelassen++; return; }
                 sofort = false;
                 Stetigkeit.Geglaettet++;
             }
@@ -356,7 +369,7 @@ namespace Materialklang
         internal static ConfigEntry<bool> RichtAktiv, LuftAktiv;
         internal static ConfigEntry<float> RueckDb, RueckLpf, InnenFaktor, Feuchte, SchussAbzug;   // Feuchte = "Air clarity factor" (frueher "Humidity")
 
-        internal static bool RichtOk, LuftOk, SebLuftOk;
+        internal static bool RichtOk, LuftOk, SebLuftOk, SebGestoert;
 
         // Zustand des laufenden Schusses (alles Hauptthread, synchron)
         internal static bool RichtGueltig;
@@ -468,6 +481,12 @@ namespace Materialklang
         [MethodImpl(MethodImplOptions.NoInlining)]
         static void SebAnwenden(Harmony h)
         {
+            Version v = Chainloader.PluginInfos.TryGetValue("red.soundenginebackport", out var pi) ? pi.Metadata.Version : null;
+            if (!SebSchutz.VersionPasst(v))
+            {
+                Plugin.Log.LogWarning($"SEB add-on: Sound Engine Backport {v} found, Materialklang is built for 1.0.x -> weapon directivity and gunshot air absorption off (shots play as SEB intends).");
+                return;
+            }
             var fire = Ziel(AccessTools.TypeByName("SoundEngineBackport.LiveEngine.LiveWeaponSoundEngine"), "FireBullet");
             var tss = Ziel(AccessTools.TypeByName("SoundEngineBackport.LiveEngine.GunshotEmitterBase"), "TryStartShot");
             var prep = Ziel(AccessTools.TypeByName("SoundEngineBackport.LiveEngine.LiveFilterBlend"), "PrepareShot");
@@ -530,8 +549,17 @@ namespace Materialklang
             new ConditionalWeakTable<SEB.FilterBlend, BlendInfo>();
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        internal static void PrueferSetzen() =>
-            SebAkustik.SetzePruefer(q => SEB.LiveFilterBlend.Registry.ContainsKey(q));
+        internal static void PrueferSetzen() => SebAkustik.SetzePruefer(IstSeb);
+
+        static bool IstSeb(BetterSource q)
+        {
+            if (Gestoert) return false;
+            try { return Registriert(q); }
+            catch (Exception ex) { Fehler("source lookup", ex); return false; }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static bool Registriert(BetterSource q) => SEB.LiveFilterBlend.Registry.ContainsKey(q);
 
         static float DbZuGain(float db) => Mathf.Pow(10f, db / 20f);
 
@@ -566,10 +594,38 @@ namespace Materialklang
 
         // Prefix GunshotEmitterBase.TryStartShot(ShotPlaybackContext context, double scheduled, out SuperSource source, out float length)
         // (der Context kommt als Wert; "ref" im Prefix schreibt die geaenderte Fassung zurueck)
+        // 0.8.3: Alles, was Felder/Konstruktoren von SEB nennt, steht in eigenen NoInlining-Methoden, deren AUFRUF im try liegt.
+        // Fehlt nach einem SEB-Update ein Feld oder der Konstruktor, wirft das JIT beim ersten Aufruf genau dort - der Fehler wird
+        // gefangen, die SEB-Teile schalten sich ab und der Schuss laeuft unveraendert (vorher brach der Prefix TryStartShot ab: stumm).
+        // Merker liegt in SebAkustik (ohne SEB-Typen): ein Zugriff hier loest nicht die Typ-Initialisierung von SebTeil
+        // (Tabelle mit SEB.FilterBlend) aus.
+        static bool Gestoert { get => SebAkustik.SebGestoert; set => SebAkustik.SebGestoert = value; }
+
+        static void Fehler(string teil, Exception ex)
+        {
+            if (SebSchutz.Strukturfehler(ex)) Abschalten(teil, ex); else Statistik.Fehler(ex);
+        }
+
+        static void Abschalten(string teil, Exception ex)
+        {
+            if (Gestoert) return;
+            Gestoert = true;
+            SebAkustik.RichtOk = SebAkustik.SebLuftOk = false;
+            Plugin.Log.LogError($"SEB add-on: {teil} failed ({ex.GetType().Name}: {ex.Message}) - Sound Engine Backport probably changed. " +
+                                "Weapon directivity and gunshot air absorption are off for this session; shots play as SEB intends.");
+        }
+
         static void SchussVor(ref SEB.ShotPlaybackContext context)
         {
             var info = SebAkustik.Aktuell = new SchussInfo();
-            try
+            if (Gestoert) return;
+            try { SchussRechnen(ref context, info); }
+            catch (Exception ex) { if (SebSchutz.Strukturfehler(ex)) info.Gueltig = false; Fehler("shot preparation", ex); }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static void SchussRechnen(ref SEB.ShotPlaybackContext context, SchussInfo info)
+        {
             {
                 info.Gueltig = true;
                 info.Innen = context.Environment == EnvironmentType.Indoor;
@@ -612,7 +668,6 @@ namespace Materialklang
                     info.Faktor = 0.5f;   // keine Grenzen bekannt: halbe Entfernung als Naeherung
                 }
             }
-            catch (Exception ex) { Statistik.Fehler(ex); }
         }
 
         static Exception SchussEnde(Exception __exception)
@@ -625,7 +680,14 @@ namespace Materialklang
         // Als Prefix, weil PrepareShot selbst schon einmal rechnet.
         static void VorbereitenVor(SEB.LiveFilterBlend __instance, bool spatialEnabled)
         {
-            try
+            if (Gestoert) return;
+            try { Vorbereiten(__instance, spatialEnabled); }
+            catch (Exception ex) { Fehler("filter preparation", ex); }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static void Vorbereiten(SEB.LiveFilterBlend __instance, bool spatialEnabled)
+        {
             {
                 var info = Tabelle.GetValue(__instance._blend, _ => new BlendInfo());
                 info.Quelle = __instance._source;
@@ -647,13 +709,19 @@ namespace Materialklang
                     info.Innen = false;
                 }
             }
-            catch (Exception ex) { Statistik.Fehler(ex); }
         }
 
         // Postfix FilterBlend.Compute(): FilterTargets
         static void BlendNach(SEB.FilterBlend __instance, ref SEB.FilterTargets __result)
         {
-            try
+            if (Gestoert) return;
+            try { BlendRechnen(__instance, ref __result); }
+            catch (Exception ex) { Fehler("filter blend", ex); }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static void BlendRechnen(SEB.FilterBlend __instance, ref SEB.FilterTargets __result)
+        {
             {
                 if (!Tabelle.TryGetValue(__instance, out var info) || info.Quelle == null) return;
                 float alt = __result.LowPass;
@@ -697,7 +765,6 @@ namespace Materialklang
                 if (KlangLog.An)
                     KlangLog.SebMerken(info.Quelle, info.W, info.Db, info.DirLp, luftHz, __result.LowPass, waldM, waldHz);
             }
-            catch (Exception ex) { Statistik.Fehler(ex); }
         }
     }
 }

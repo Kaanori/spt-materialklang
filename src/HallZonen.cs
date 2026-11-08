@@ -30,7 +30,7 @@ namespace Materialklang
         const float MaxVolumen = 40000f;
 
         internal static ConfigEntry<bool> Aktiv;
-        internal static ConfigEntry<float> Staerke;
+        internal static ConfigEntry<float> Staerke, AlphaMin;
         internal static ConfigEntry<int> MaxZonen;
         internal static ConfigEntry<bool> NurGroessteBox;
         internal static ConfigEntry<bool> Diagnose;
@@ -114,6 +114,8 @@ namespace Materialklang
                 new ConfigDescription("Maximum number of reverb zones per raid (large rooms first).", new AcceptableValueRange<int>(0, 2000)));
             NurGroessteBox = cfg.Bind(sek, "Only largest box per room", true,
                 "A room often consists of several boxes. On: only the largest gets a zone (overlapping zones could add up). Off: one zone per box. Applies live (the rooms are measured again).");
+            AlphaMin = cfg.Bind(sek, "Min. absorption", 0.05f,
+                new ConfigDescription("Lowest mean absorption coefficient of a room. The rays only see wall surfaces; openings, furniture, gaps and clutter also absorb. 0.05 = a room never rings longer than twice the game's baked reverb (baked absorption 0.1). Lower = bare concrete rooms ring longer. Applies live.", new AcceptableValueRange<float>(0.01f, 0.1f)));
             Diagnose = cfg.Bind(sek, "Diagnostics", true,
                 "Writes to the BepInEx log at raid start: zone count, measuring time and the 5 most extreme rooms (name, main material, change of reverb time at 1 kHz).");
 
@@ -123,6 +125,7 @@ namespace Materialklang
                 else if (daten != null) Anstehend(0f);
             };
             Staerke.SettingChanged += (_, __) => { if (Aktiv.Value && daten != null) Anstehend(0f); };
+            AlphaMin.SettingChanged += (_, __) => { if (Aktiv.Value && daten != null) Anstehend(0f); };
             // live: andere Boxauswahl -> neu messen (die Raumliste bleibt bis Raidende erhalten)
             NurGroessteBox.SettingChanged += (_, __) => { if (Aktiv.Value && raeume != null) { daten = null; Anstehend(0f); } };
             MaxZonen.SettingChanged += (_, __) => { if (Aktiv.Value && daten != null) Anstehend(0f); };
@@ -366,15 +369,30 @@ namespace Materialklang
         // H. Kuttruff, Room Acoustics, 6. Aufl., CRC 2017). Fuer stark daempfende Raeume waere Eyring genauer
         // (C. F. Eyring, JASA 1, 217-241, 1930) - hier nicht verwendet.
         // Hallpegel: diffuses Feld ~ 10*log10(4/(S*alpha)) -> Differenz 10*log10(0.1/alpha) (Kuttruff; Bies & Hansen).
-        // Grenzen -0.8..+1.5 s und +-6 dB sind Annahmen (nach Gehoer).
+        // 0.8.3 (Review-Befund 6): bis 0.8.2 lag fast jeder Betonraum am Deckel +1,5 s (alpha 0,02 -> 0.161*V/S*(50-10)), Raeume
+        // verschiedener Groesse klangen gleich. Zwei Ursachen behoben:
+        //  - Die Strahlen sehen nur Wandflaechen. Oeffnungen, Moebel, Fugen absorbieren auch: mittleres alpha nie unter "Min. absorption"
+        //    (Standard 0,05 = hoechstens doppelte gebackene Nachhallzeit; Annahme, kein Messwert).
+        //  - Die Luft absorbiert im Raum mit (4mV-Term, ISO 354), in grossen Hallen ab 2 kHz deutlich. m nach ISO 9613-1 bei 20 C,
+        //    50 % r. F., 101,325 kPa (Raumklima wie bei Hallraum-Messungen) - fuer gebackene und neue Zeit gleich.
+        // Grenzen -0.8..+1.5 s und +-6 dB bleiben als Sicherung (nach Gehoer).
+        const float DeckelRt = 1.5f;
+        static readonly double[] LuftM = BerechneLuftM();
+        static double[] BerechneLuftM()
+        {
+            var m = new double[Baender.Length];
+            for (int b = 0; b < m.Length; b++) m[b] = Bauakustik.LuftM(Iso9613.Alpha(Baender[b], 20.0, Iso9613.Bezugsdruck, 50.0));
+            return m;
+        }
+
         static void Korrektur(RaumDaten d, float staerke, float[] dRt, float[] dPegel)
         {
+            float amin = AlphaMin.Value;
             for (int b = 0; b < Baender.Length; b++)
             {
-                float a = d.Alpha[b];
-                float rt = 0.161f * d.VzuS * (1f / a - 1f / GebackenAlpha);
-                dRt[b] = Mathf.Clamp(rt, -0.8f, 1.5f) * staerke;
-                dPegel[b] = Mathf.Clamp(10f * Mathf.Log10(GebackenAlpha / a), -6f, 6f) * staerke;
+                Bauakustik.HallKorrektur(d.VzuS, d.Alpha[b], GebackenAlpha, amin, LuftM[b], out double rt, out double pegel);
+                dRt[b] = Mathf.Clamp((float)rt, -0.8f, DeckelRt) * staerke;
+                dPegel[b] = Mathf.Clamp((float)pegel, -6f, 6f) * staerke;
             }
         }
 
@@ -392,9 +410,11 @@ namespace Materialklang
             UnityEngine.Object.DontDestroyOnLoad(wurzel);
             int ok = 0, fehl = 0;
             var extrem = new List<(string name, string mat, float rt1k, float alpha1k, float vol)>();
+            int amDeckel = 0;
             foreach (var d in kandidaten)
             {
                 Korrektur(d, staerke, dRt, dPegel);
+                if (dRt[Band1k] >= DeckelRt * staerke - 1e-4f && staerke > 0f) amDeckel++;
                 extrem.Add((d.Name, d.Dominant, dRt[Band1k], d.Alpha[Band1k], d.Volumen));
                 d.DRt1k = dRt[Band1k]; d.DPegel1k = dPegel[Band1k]; d.Inv = Quaternion.Inverse(d.Box.Drehung);
                 d.Angelegt = ZoneAnlegen(d, dRt, dPegel);
@@ -409,7 +429,8 @@ namespace Materialklang
                 var top = extrem.OrderByDescending(e => Mathf.Abs(e.rt1k)).Take(5)
                     .Select(e => $"{e.name} [{e.mat}, a(1k)={e.alpha1k:F2}, {e.vol:F0} m3] dRT60(1k)={e.rt1k:+0.00;-0.00} s");
                 Plugin.Log.LogInfo($"[Reverb] Map {karte}: {ok} zones created ({fehl} failed) from {daten.Count} measured rooms" +
-                                   $" ({(gemessen ? $"measuring {msMessen:F1} ms, " : "no new measurement, ")}total {sw.Elapsed.TotalMilliseconds:F1} ms), strength {staerke:F2}.");
+                                   $" ({(gemessen ? $"measuring {msMessen:F1} ms, " : "no new measurement, ")}total {sw.Elapsed.TotalMilliseconds:F1} ms), strength {staerke:F2}, " +
+                                   $"min. absorption {AlphaMin.Value:F2}; {amDeckel} of {kandidaten.Count} rooms at the +{DeckelRt:F1} s cap (1 kHz).");
                 if (extrem.Count > 0) Plugin.Log.LogInfo("[Reverb] Most extreme rooms: " + string.Join(" | ", top));
             }
         }

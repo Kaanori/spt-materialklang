@@ -105,6 +105,18 @@ namespace Materialklang
             Patch(h, AccessTools.DeclaredMethod(typeof(SpatialAudioOcclusionCombinedCalculator), "GetScore"), nameof(WertungNach), Priority.Normal);
             // 0.8.1: nach einem Reset (Pool, Wechsel Hindernis <-> Raumweg) gilt die gemerkte Wertung nicht mehr
             Patch(h, AccessTools.DeclaredMethod(typeof(SpatialAudioOcclusionCombinedCalculator), "OnReset"), nameof(ResetNach), Priority.Normal);
+            // 0.8.3: ein Rechner aus dem Pool traegt noch das Ergebnis seiner vorigen Quelle (siehe NeuerOccluderNach)
+            try
+            {
+                int n = 0;
+                foreach (var ctor in AccessTools.GetDeclaredConstructors(typeof(CombinedSpatialAudioOccluder)))
+                {
+                    h.Patch(ctor, postfix: new HarmonyMethod(typeof(Physik), nameof(NeuerOccluderNach)));
+                    n++;
+                }
+                if (n == 0) Plugin.Log.LogWarning("Steady occlusion: CombinedSpatialAudioOccluder constructor not found -> pooled calculators keep the previous sound's result (game behaviour).");
+            }
+            catch (Exception e) { Statistik.Fehler(e); }
         }
 
         static void Patch(Harmony h, System.Reflection.MethodInfo ziel, string methode, int prio)
@@ -154,6 +166,9 @@ namespace Materialklang
         // EN ISO 12354-1:2017). Minimum statt Energiesumme ist eine Vereinfachung.
         // 0.8.1: Waehrend einer Neuberechnung passen die _ran*-Merker (schon die neue Rechnung) nicht zum Ergebnis (noch das alte);
         // das Minimum ueber diese Mischung sprang zwischen 0 und 1. Jetzt gilt bis zum Abschluss die letzte fertige Wertung.
+        // Bekannte Grenze (Review 0.8.3, Punkt 7, nur dokumentiert): T ist im Physik-Modus eine dB-Skala (Wertung = dB / Dynamik),
+        // D (Beugung) und R (Reflexion) sind Heuristiken des Spiels auf eigener Skala 0..1. Das Minimum vergleicht also Werte
+        // unterschiedlicher Herkunft; eine Kalibrierkurve fuer D/R gibt es nicht (keine Messdaten).
         static void WertungNach(SpatialAudioOcclusionCombinedCalculator __instance, ref float __result)
         {
             if (!An) return;
@@ -192,14 +207,36 @@ namespace Materialklang
             catch (Exception e) { Statistik.Fehler(e); }
         }
 
+        internal static int PoolZurueckgesetzt;
+
+        // 0.8.3 (Review-Befund 3): SpatialAudioSystemPoolService.ResetCombinedCalculator ruft beim Zurueckgeben nur
+        // FinalizeAndGetAggregateResult, NICHT Reset: LastAggregateResult, _combinedStep und die _ran*-Merker bleiben die der
+        // vorigen Quelle. Der naechste Occluder, der den Rechner bekommt, las 1-3 Bilder lang deren Wertung - im Physik-Modus
+        // sogar als "fertige" Wertung gemerkt (Stetigkeit). Darum hier, sobald ein Occluder mit seinem Rechner entsteht, der
+        // Reset, den das Spiel selbst beim Wechsel Hindernis <-> Raumweg macht (LastAggregateResult = frei, OnReset vergisst die
+        // gemerkte Wertung). Bis zur ersten eigenen Rechnung gilt also "frei" wie nach jedem Reset im Spiel.
+        static void NeuerOccluderNach(CombinedSpatialAudioOccluder __instance)
+        {
+            if (!Plugin.Aktiv.Value || !Stetigkeit.An) return;
+            try
+            {
+                if (__instance._obstructionCalculator is SpatialAudioOcclusionCombinedCalculator c && !c.IsCalculating)
+                {
+                    c.Reset();
+                    PoolZurueckgesetzt++;
+                }
+            }
+            catch (Exception e) { Statistik.Fehler(e); }
+        }
+
         internal static void Loggen()
         {
             if (Stetigkeit.Gerechnet + Stetigkeit.Geglaettet + Stetigkeit.SofortGelassen > 0)
             {
                 Plugin.Log.LogInfo($"[Diagnostics] Steady occlusion: {Stetigkeit.Gehalten} of {Stetigkeit.Gerechnet} path scores held from the last finished calculation " +
                                    $"(0.8.0 would have mixed old and new there), {Stetigkeit.Geglaettet} filter jumps of playing sounds turned into glides, " +
-                                   $"{Stetigkeit.SofortGelassen} set at once (new/silent sounds).");
-                Stetigkeit.Gehalten = Stetigkeit.Gerechnet = Stetigkeit.Geglaettet = Stetigkeit.SofortGelassen = 0;
+                                   $"{Stetigkeit.SofortGelassen} set at once (new/silent sounds), {PoolZurueckgesetzt} pooled calculators reset for a new sound.");
+                Stetigkeit.Gehalten = Stetigkeit.Gerechnet = Stetigkeit.Geglaettet = Stetigkeit.SofortGelassen = PoolZurueckgesetzt = 0;
             }
             if (!An || Lautstaerken == 0) return;
             Plugin.Log.LogInfo($"[Diagnostics] Physics mode: {Lautstaerken} volume updates (mean -{SummeDb / Lautstaerken:F1} dB), {Filter} low-pass updates.");

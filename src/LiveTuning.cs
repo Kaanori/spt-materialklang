@@ -18,6 +18,31 @@ using BepInEx.Configuration;
 
 namespace Materialklang
 {
+    /// <summary>0.8.3: Welche gemerkten Spielzustaende muss eine geaenderte Einstellung neu aufbauen lassen?</summary>
+    [Flags]
+    internal enum Auffrischung { Nichts = 0, Waende = 1, Portale = 2 }
+
+    internal static class AuffrischRegel
+    {
+        /// <summary>
+        /// Bis 0.8.2 liess JEDE Aenderung (z. B. Lautheit, Luft, Hall) alle Tuer-/Fensterwerte verwerfen und alle Portale neu setzen;
+        /// das Spiel rechnet dann jede Verdeckung neu (ForceUpdate aller Quellen, sofortiges Setzen). Jetzt nur noch, wo es noetig ist:
+        ///  - Portale (Tueren/Fenster-Zielwerte + UpdateInitialPortalsData): "4. Doors and Windows" und "1. General/Enabled"
+        ///  - Waende zwischen Raeumen (Messungen veraltet): zusaetzlich "0. Physics Mode", "1. General/Overall strength",
+        ///    die Materialgruppen "2. xx" und "5. Walls Between Rooms"
+        /// </summary>
+        public static Auffrischung Fuer(string sektion, string schluessel)
+        {
+            if (sektion == null) return Auffrischung.Nichts;
+            if (sektion.StartsWith("4. ", StringComparison.Ordinal) || (sektion == "1. General" && schluessel == "Enabled"))
+                return Auffrischung.Portale | Auffrischung.Waende;
+            if (sektion.StartsWith("0. ", StringComparison.Ordinal) || sektion.StartsWith("2. ", StringComparison.Ordinal)
+                || sektion.StartsWith("5. ", StringComparison.Ordinal) || (sektion == "1. General" && schluessel == "Overall strength"))
+                return Auffrischung.Waende;
+            return Auffrischung.Nichts;
+        }
+    }
+
     internal sealed class LiveTuning
     {
         /// <summary>Wirken nur beim Start (Haken werden einmal gesetzt bzw. Puffer beim Raidstart angelegt).</summary>

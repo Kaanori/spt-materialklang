@@ -50,5 +50,46 @@ namespace Materialklang
             else r = rMl + 10.0 * Math.Log10(2.0 * eta * f / (Math.PI * fc));
             return Math.Min(r, rMl);                                                               // nie ueber dem Massengesetz
         }
+
+        // 0.8.3: Dicke einer EINZELNEN Flaeche (Mesh ohne Rueckseite, nur eine Seite getroffen) je Materialgruppe, in m.
+        // Bis 0.8.2 galt fuer jede Gruppe die "Shell thickness" (0,15 m): ein Plakat (Kunststoff), ein Autoblech oder eine
+        // Glasscheibe zaehlten wie 15 cm Wand (34-41 dB). Einseitige Flaechen sind im Spiel fast immer duenne Teile; nur bei
+        // massiven Gruppen (Beton/Stein, Erde, Kies, Wasser, Schnee, Unbekannt) steht die Flaeche fuer eine Wandschale.
+        // Werte = uebliche Bauteildicken, ANNAHMEN (keine Messung): Stahlwand Container 6-10 mm, Karosserie-/Trapezblech
+        // 0,7-2 mm, Brett/Sperrholz 12 mm, Bohle 40 mm, Floatglas 4-6 mm (EN 572-2), Folie/Plakat/Pappe ~5 mm,
+        // Innentuerblatt 40 mm (DIN 18101). NaN = die Einstellung "Shell thickness". Reihenfolge wie enum Gruppe.
+        static readonly float[] EinzelTab =
+        {
+            float.NaN, float.NaN, float.NaN, 0.01f, 0.002f, 0.04f, 0.012f, 0.006f, 0.005f, 0f, float.NaN, float.NaN, float.NaN, 0.04f, float.NaN
+        };
+
+        // ---- Hall (HallZonen.cs), 0.8.3 ----
+        // Sabine mit Luftabsorption: T60 = 0.161 * V / (S*alpha + 4*m*V), m = Energie-Daempfungskoeffizient der Luft in 1/m
+        // = alpha_Luft(dB/m) / (10*log10(e)). Quelle: Kuttruff, Room Acoustics (6. Aufl., CRC 2017), Kap. 5; ISO 354:2003 (4mV-Term).
+        // Hier je V/S geschrieben: T60 = 0.161 * VzuS / (alpha + 4*m*VzuS).
+        public static double Sabine(double vzus, double alpha, double mLuft) => 0.161 * vzus / (alpha + 4.0 * mLuft * vzus);
+
+        /// <summary>m (1/m) aus der Luftdaempfung in dB/m.</summary>
+        public static double LuftM(double dbJeMeter) => dbJeMeter / (10.0 * Math.Log10(Math.E));
+
+        /// <summary>
+        /// Verschiebung von Nachhallzeit (s) und Hallpegel (dB) gegenueber dem eingebackenen alpha 'gebacken'.
+        /// alphaMin = Untergrenze der mittleren Absorption (nicht gesehene Absorber: Oeffnungen, Moebel, Fugen); damit ist die neue
+        /// Nachhallzeit hoechstens gebacken/alphaMin mal die gebackene. Pegel: diffuses Feld ~ 1/A (A = S*alpha + 4mV).
+        /// </summary>
+        public static void HallKorrektur(double vzus, double alpha, double gebacken, double alphaMin, double mLuft, out double dRt, out double dPegel)
+        {
+            double a = Math.Max(alpha, alphaMin);
+            double luft = 4.0 * mLuft * vzus;
+            dRt = Sabine(vzus, a, mLuft) - Sabine(vzus, gebacken, mLuft);
+            dPegel = 10.0 * Math.Log10((gebacken + luft) / (a + luft));
+        }
+
+        /// <summary>Angenommene Dicke (m) einer einzelnen Flaeche der Gruppe g; nie dicker als die Schale.</summary>
+        public static float EinzelDicke(int g, float schale)
+        {
+            float t = g >= 0 && g < EinzelTab.Length ? EinzelTab[g] : float.NaN;
+            return float.IsNaN(t) ? schale : Math.Min(t, schale);
+        }
     }
 }

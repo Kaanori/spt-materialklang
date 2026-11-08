@@ -47,20 +47,20 @@ namespace Materialklang
         }
         const int LogMax = 6;
 
-        struct Ereignis { public float t; public int id; }
-
         static readonly ConditionalWeakTable<ParallelSoundPropagationCalculator, WandWeg> Tabelle =
             new ConditionalWeakTable<ParallelSoundPropagationCalculator, WandWeg>();
         static readonly List<WandWeg> Alle = new List<WandWeg>();
         static readonly Dictionary<int, bool> Gelaende = new Dictionary<int, bool>();
-        static readonly Ereignis[] ev = new Ereignis[2 * MaxTreffer];
-        static readonly bool[] benutzt = new bool[2 * MaxTreffer];
+        static readonly WandTreffer[] vorT = new WandTreffer[MaxTreffer], rueckT = new WandTreffer[MaxTreffer];
+        static readonly WandStueck[] stuecke = new WandStueck[2 * MaxTreffer];
+        static readonly float[] energie = new float[Linien];
         static readonly Vector3[] versatz = new Vector3[Linien];
+        static bool mitteNahA, mitteNahB;
 
         static int hauptThread, schmutz, budgetBild, budgetRest;
         static WandWeg logW; static int logLinie;
         // Diagnose
-        static int gestartet, gemessen, vergleiche, wandGewann, gesperrt, voll, ohneBudget;
+        static int gestartet, gemessen, vergleiche, wandGewann, gesperrt, voll, ohneBudget, lueckeDicht, endeVerdeckt, einzelZahl, ohneAussage;
         static double summeRoute, summeWand;
 
         /// <summary>Live-Aenderung: alle Wandmessungen gelten als veraltet und werden neu gestartet.</summary>
@@ -92,7 +92,7 @@ namespace Materialklang
             Zuschlag = c.Bind(s, "Surcharge", 0.05f,
                 new ConfigDescription("Added to the measured wall attenuation: residual attenuation even with a completely free line. Ignored while Physics Mode is on.", new AcceptableValueRange<float>(0f, 0.5f)));
             Schale = c.Bind(s, "Shell thickness (m)", 0.15f,
-                new ConfigDescription("Assumed thickness of a single surface without a back face; wall pieces over 1.5 m count as two such shells.", new AcceptableValueRange<float>(0.02f, 1f)));
+                new ConfigDescription("Assumed thickness of a single surface without a back face for solid groups (concrete/stone, soil, gravel, water, snow, unknown); thin groups (metal, wood, glass, soft, door) use their typical thickness (see README), never more than this. Wall pieces over 1.5 m count as two such shells.", new AcceptableValueRange<float>(0.02f, 1f)));
         }
 
         internal static void Anwenden(Harmony h)
@@ -146,8 +146,10 @@ namespace Materialklang
                 ? $"route via doors on average {summeRoute / vergleiche:F2}, wall {summeWand / vergleiche:F2}, wall won {wandGewann}x of {vergleiche}"
                 : "no comparison yet";
             Plugin.Log.LogInfo($"[Diagnostics] Walls: {gestartet} measurements started, {gemessen} finished, {verg}; " +
-                               $"{voll} lines blocked (permanent hits/hill), {ohneBudget}x postponed due to the per-frame budget.");
-            gestartet = gemessen = vergleiche = wandGewann = gesperrt = voll = ohneBudget = 0;
+                               $"lines: {voll} with an unseen gap (dropped), {lueckeDicht} with a gap but already at the cap (blocked), {gesperrt} through a hill (blocked), " +
+                               $"{endeVerdeckt} offset lines starting inside geometry (dropped), {einzelZahl} single surfaces at group thickness; " +
+                               $"{ohneAussage} measurements without any usable line (vanilla), {ohneBudget}x postponed due to the per-frame budget.");
+            gestartet = gemessen = vergleiche = wandGewann = gesperrt = voll = ohneBudget = lueckeDicht = endeVerdeckt = einzelZahl = ohneAussage = 0;
             summeRoute = summeWand = 0;
         }
 
@@ -312,11 +314,14 @@ namespace Materialklang
             float staerke = Plugin.Gesamtstaerke.Value, schale = Schale.Value, summe = 0f;
             w.LogAnzahl = 0;
             logW = KlangLog.An ? w : null;
-            for (int k = 0; k < Linien; k++) { logLinie = k; summe += Gewicht[k] * Linie(w, k, staerke, schale); }
+            for (int k = 0; k < Linien; k++) { logLinie = k; energie[k] = Linie(w, k, staerke, schale); }
             logW = null;
+            // 0.8.3: Linien ohne Aussage (Luecke, Ende in Geometrie) fallen heraus, die Gewichte der uebrigen werden neu verteilt
+            summe = WandLinie.Mitteln(energie, Gewicht, Linien);
+            gemessen++;
+            if (summe < 0f) { w.Score = -1f; ohneAussage++; return; }     // keine Aussage -> Vanilla-Route gilt
             float wand = Physik.An ? Physik.WertungAusEnergie(summe) : Mathf.Clamp01(1f - summe + Zuschlag.Value);
             w.Score = wand;
-            gemessen++;
             float route = c._propagationScore;
             if (route > 0f)
             {
@@ -325,82 +330,64 @@ namespace Materialklang
             }
         }
 
-        // Restenergie entlang einer Linie (beide Richtungen zusammen), 0 = voellig dicht.
+        // Restenergie entlang einer Linie (beide Richtungen zusammen), 0 = voellig dicht, -1 = keine Aussage (0.8.3).
         static float Linie(WandWeg w, int k, float staerke, float schale)
         {
             float len = w.Laenge;
-            int n = 0;
-            for (int dir = 0; dir < 2; dir++)
-            {
-                int basis = (2 * k + dir) * MaxTreffer, anzahl = 0;
-                for (int j = 0; j < MaxTreffer; j++)
-                {
-                    RaycastHit h = w.Treffer[basis + j];
-                    int id = h.colliderInstanceID;
-                    if (id == 0) break;
-                    anzahl++;
-                    ev[n].id = id;
-                    ev[n].t = dir == 0 ? h.distance : len - h.distance;
-                    n++;
-                }
-                if (anzahl >= MaxTreffer) { voll++; return 0f; }   // Strahl voll -> nicht verlaesslich, wie dicht
-            }
+            int nVor = Lesen(w, 2 * k, len, false, vorT, out bool vorVoll);
+            int nRueck = Lesen(w, 2 * k + 1, len, true, rueckT, out bool rueckVoll);
+            if (k == 0) WandLinie.NahAnEnden(vorT, nVor, rueckT, nRueck, len, out mitteNahA, out mitteNahB);
+            var befund = WandLinie.Auswerten(vorT, nVor, vorVoll, rueckT, nRueck, rueckVoll, len, k != 0, mitteNahA, mitteNahB, stuecke, out int n);
+            if (befund == LinienBefund.EndeVerdeckt) { endeVerdeckt++; return -1f; }
 
-            // nach Entfernung sortieren (n <= 16)
-            for (int i = 1; i < n; i++)
-            {
-                var x = ev[i]; int j = i - 1;
-                while (j >= 0 && ev[j].t > x.t) { ev[j + 1] = ev[j]; j--; }
-                ev[j + 1] = x;
-            }
-            // dieselbe Flaeche aus beiden Richtungen gesehen -> einmal zaehlen
-            int m = 0;
+            float sum = 0f;
             for (int i = 0; i < n; i++)
             {
-                bool doppelt = false;
-                for (int j = m - 1; j >= 0 && ev[i].t - ev[j].t < 0.01f; j--)
-                    if (ev[j].id == ev[i].id) { doppelt = true; break; }
-                if (!doppelt) ev[m++] = ev[i];
+                var st = stuecke[i];
+                if (!Beitrag(st.Id, st.Dicke, st.Einzeln, schale, ref sum)) { gesperrt++; return 0f; }
             }
-
-            // je Collider Ein-/Austritt paaren -> Wandstuecke
-            float sum = 0f;
-            Array.Clear(benutzt, 0, m);
-            for (int i = 0; i < m; i++)
+            float e = Physik.An ? Physik.EnergieAusDb(Mathf.Min(sum, Physik.Dynamik.Value)) : Mathf.Exp(-sum * staerke);
+            if (befund == LinienBefund.Luecke)
             {
-                if (benutzt[i]) continue;
-                benutzt[i] = true;
-                int id = ev[i].id;
-                float start = ev[i].t;
-                bool offen = true;
-                for (int j = i + 1; j < m; j++)
-                {
-                    if (benutzt[j] || ev[j].id != id) continue;
-                    benutzt[j] = true;
-                    if (offen)
-                    {
-                        if (!Beitrag(id, ev[j].t - start, schale, ref sum)) { gesperrt++; return 0f; }
-                        offen = false;
-                    }
-                    else { start = ev[j].t; offen = true; }
-                }
-                if (offen && !Beitrag(id, schale, schale, ref sum)) { gesperrt++; return 0f; }   // einzelne Flaeche
+                // Untergrenze: erreicht schon das Gesehene die Hoechstdaemmung (bzw. 30 dB ohne Physik-Modus), ist die Linie sicher dicht
+                bool dicht = Physik.An ? sum >= Physik.Dynamik.Value : e <= 1e-3f;
+                if (dicht) { lueckeDicht++; return 0f; }
+                voll++;
+                return -1f;
             }
-            if (Physik.An) return Physik.EnergieAusDb(Mathf.Min(sum, Physik.Dynamik.Value));
-            return Mathf.Exp(-sum * staerke);
+            return e;
+        }
+
+        // Treffer eines Strahls lesen (T vom Linienanfang A), voll = Trefferhoechstzahl erreicht (dahinter unbekannt).
+        static int Lesen(WandWeg w, int strahl, float len, bool rueck, WandTreffer[] ziel, out bool voll)
+        {
+            int basis = strahl * MaxTreffer, n = 0;
+            for (int j = 0; j < MaxTreffer; j++)
+            {
+                RaycastHit h = w.Treffer[basis + j];
+                int id = h.colliderInstanceID;
+                if (id == 0) break;
+                ziel[n].Id = id;
+                ziel[n].T = rueck ? len - h.distance : h.distance;
+                n++;
+            }
+            voll = n >= MaxTreffer;
+            return n;
         }
 
         // false = Linie gilt als dicht (Huegel). Sonst wird die Daempfung des Stuecks auf x addiert.
-        static bool Beitrag(int id, float dicke, float schale, ref float x)
+        // einzeln = Flaeche ohne Gegenstueck (einseitiges Mesh): Dicke je Gruppe (Bauakustik.EinzelDicke, 0.8.3; vorher immer die Schale).
+        static bool Beitrag(int id, float dicke, bool einzeln, float schale, ref float x)
         {
             bool gelaende = IstGelaende(id);
-            if (gelaende && dicke > 3f) return false;
-            if (!gelaende && dicke > 1.5f) dicke = 2f * schale;     // wohl zwei getrennte Flaechen eines grossen Meshes
             int g = MaterialCache.Get(id);
             if (g == (int)Gruppe.Body) return true;              // Spieler/Leichen zaehlen nicht als Wand
+            if (einzeln) { dicke = gelaende ? schale : Bauakustik.EinzelDicke(g, schale); einzelZahl++; }
+            if (gelaende && dicke > 3f) return false;
+            if (!gelaende && dicke > 1.5f) dicke = 2f * schale;     // wohl zwei getrennte Flaechen eines grossen Meshes
             if (Physik.An)
             {
-                float db = Physik.Daemmung(g, Mathf.Max(dicke, 0.02f));
+                float db = Physik.Daemmung(g, einzeln ? dicke : Mathf.Max(dicke, 0.02f));   // Einzelflaeche: Gruppendicke (Daemmung begrenzt selbst auf 2 mm)
                 x += db;
                 LogStueck(id, g, dicke, db);
                 return true;
@@ -411,7 +398,7 @@ namespace Materialklang
                 float ts = TuerenFenster.TuerS(id);
                 if (ts >= 0f) s = ts;
             }
-            float dd = Mathf.Max(dicke, 0.02f);
+            float dd = einzeln ? dicke : Mathf.Max(dicke, 0.02f);
             x += s + Plugin.Dicke[g].Value * dd;
             LogStueck(id, g, dicke, (s + Plugin.Dicke[g].Value * dd) * Plugin.Gesamtstaerke.Value * 4.3429f);
             return true;

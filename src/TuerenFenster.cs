@@ -43,7 +43,7 @@ namespace Materialklang
             MetallDuenn = c.Bind(s, "Door thin metal", 0.6f, new ConfigDescription("As above, thin metal.", bereich));
             MetallDick = c.Bind(s, "Door thick metal", 0.8f, new ConfigDescription("As above, thick metal (steel door).", bereich));
             FensterHeil = c.Bind(s, "Window intact", 0.55f,
-                new ConfigDescription("How much sound an intact window absorbs. Broken = 0; for window rows in proportion to the free area.", bereich));
+                new ConfigDescription("How much sound an intact window absorbs. Broken = 0; for window rows the game itself accounts for the size of the broken part.", bereich));
         }
 
         internal static void Anwenden(Harmony h)
@@ -114,12 +114,11 @@ namespace Materialklang
             float zu = Mathf.Lerp(1f, 0.1f, p._transmission);     // Vanilla-Wert "ganz zu"
             float r = zu > 0.001f ? Mathf.Clamp01(closure / zu) : 0f;   // 0 = offen, 1 = zu (auch beim Auf-/Zugehen)
             float neu;
-            if (mw != null)
-            {
-                float frei = (mw._totalArea > 0.0001f && mw._freeArea > 0f) ? Mathf.Clamp01(1f - mw._freeArea / mw._totalArea) : 0f;
-                neu = ziel * (r + (1f - r) * frei);               // offen: nur der Rest der Glasflaeche daempft
-            }
-            else neu = ziel * r;
+            // 0.8.3 (Review-Punkt 10): Ein offenes Mehrfachfenster (Scheiben zerschossen) bekommt vom Spiel selbst schon
+            // traversalMaxCost und Depth der freien Flaeche (MultiWindowPortal.UpdateTraversalCostOnWindowHit/UpdateDepthOnWindowHit) -
+            // der Rest der Scheiben steckt damit in der Weg-Rechnung. Bis 0.8.2 kam hier fuer MultiWindow noch einmal "Restglas"
+            // (1 - freie/gesamte Flaeche) als Schliessung dazu - doppelt. Physikalisch dominiert ohnehin die Oeffnung (paralleler Weg).
+            neu = ziel * r;
             neu = Mathf.Clamp01(neu);
 
             angepasst++; summeAlt += closure; summeNeu += neu;

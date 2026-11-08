@@ -29,7 +29,7 @@ namespace Materialklang
     [BepInDependency("red.soundenginebackport", BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
-        public const string Version = "0.8.1";
+        public const string Version = "0.8.3";
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Aktiv;
         internal static ConfigEntry<bool> Diagnose;
@@ -80,6 +80,8 @@ namespace Materialklang
             SebAkustik.Anwenden(h);
             Physik.Anwenden(h);
             FilterGleiten.Anwenden(h);
+            MultiQuelle.Anwenden(h);
+            QuellWirkung.Anwenden(h);
             Wetter.Anwenden(h);
             KlangLog.Anwenden(h);
             Log.LogInfo($"Materialklang {Version} (beta) loaded.");
@@ -274,7 +276,7 @@ namespace Materialklang
     internal static class Statistik
     {
         static float naechsterLog;
-        static int rechnungen, gedaempft, fehler;
+        static int rechnungen, gedaempft, fehler, fehlerGemeldet;
         static double summeAlt, summeNeu;
         static readonly int[] treffer = new int[Plugin.AnzahlGruppen];
         static readonly Dictionary<string, int> materialien = new Dictionary<string, int>();
@@ -313,13 +315,25 @@ namespace Materialklang
             if (fehler++ < 3) Plugin.Log.LogError($"Materialklang: {ex}");
         }
 
+        // 0.8.3: nur die ersten 3 Fehler stehen ausfuehrlich im Log; danach alle 30 s die Anzahl (auch ohne "Diagnostic log").
+        static void FehlerMelden()
+        {
+            if (fehler == fehlerGemeldet) return;
+            Plugin.Log.LogWarning($"Materialklang: {fehler - fehlerGemeldet} errors in the last 30 s ({fehler} since start; the first 3 are logged in full above).");
+            fehlerGemeldet = fehler;
+        }
+
         public static void VielleichtLoggen()
         {
-            if (!Plugin.Diagnose.Value || Time.realtimeSinceStartup < naechsterLog) return;
+            if (Time.realtimeSinceStartup < naechsterLog) return;
             naechsterLog = Time.realtimeSinceStartup + 30f;
+            FehlerMelden();
+            if (!Plugin.Diagnose.Value) return;
             SebAkustik.Loggen();
             Wald.Loggen();
             Physik.Loggen();
+            MultiQuelle.Loggen();
+            QuellWirkung.Loggen();
             TuerenFenster.DiagnoseLoggen();
             WandZwischenRaeumen.DiagnoseLoggen();
             if (rechnungen == 0) return;

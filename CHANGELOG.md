@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.8.3-beta
+
+- `Mark odd sound key` now plays a short confirmation sound (the game's quest "sub-task complete" ding), or the error sound if the sound log is off – no need to check the log to know the mark was set.
+
+Fixes from a code review of 0.8.2, checked against the Sandbox and City sound logs of 08.11.2026. Built, not yet heard in a raid. The plugin reports the numeric version 0.8.3.
+
+**Low-pass jumping by an octave every few frames (bots behind walls)**
+- *Cause:* the game keeps **one** occlusion value per occluder, but each sound of a bot (footsteps, gear, breathing, weapon) gets it multiplied by the indoor/outdoor factor of its own sound group (character sounds 2.0, weapon sounds 1.5). On a full update every sound gets its own value. Between full updates the game re-applies the stored *volume* of each sound but recalculates the *low-pass* from the occluder's single value – which still holds the value of the sound calculated last. In the log: door path 0.46 and volume constant, the footsteps' effect alternating 0.92 / 0.69 (= 0.46 × 2.0 / × 1.5) and the low-pass 1043 / 2235 Hz every 2–3 frames (56 jumps of one octave or more in the Sandbox log). Volume and low-pass of a sound also came from different calculations. Vanilla has the same bug with a flatter filter curve.
+- *Fix:* the value is remembered per sound when the game calculates it and put back right before the game applies that sound's filter. Low-pass and volume of every sound now come from the same calculation. Part of `Steady occlusion` (on). New diagnostic line: `Per-source occlusion: N of M filter updates would have used the occlusion of another sound`.
+
+**Walls between rooms: the wall (almost) never won**
+- *Cause 1:* if one of the two rays of a measuring line had 8 hits, the whole line counted as blocked – 201 of 230 lines in the Sandbox log, "wall won 0x". Now a line is only unknown if *both* rays are full and leave an unseen gap; then it counts as blocked only if what was seen already reaches the 60 dB cap, otherwise it is left out.
+- *Cause 2:* every single surface without a back face counted as 0.15 m of wall (posters, car panels, glass about 34–41 dB). Now thin groups get a typical thickness (metal sheet 2 mm, glass 6 mm, posters/plastic 5 mm, thin wood 12 mm, thick wood/doors 40 mm, thick metal 10 mm); solid groups (concrete, soil, …) stay at `Shell thickness`, because there the surface is one side of a slab – the road above the Sandbox car park is real concrete between you and the bot and keeps counting.
+- *Cause 3:* the four lines offset by 0.25 m often start inside geometry (under the pavement a bot stands on, behind the wall you lean against) and hit a surface that is not between the sound and you. Such lines are now left out unless the centre line has a surface at the same end; the other lines share their weight. If no line says anything, the game's door path applies.
+- Bot hearing (SAIN) uses the same single-surface thicknesses. New counters in the `Walls:` diagnostic line.
+
+**Pooled calculators carried the previous sound's result**
+- The game returns occlusion calculators to its pool without resetting them, so a new sound read the score of the previous owner for 1–3 frames (in Physics Mode it was even kept as a "finished" score). The calculator is now reset when a new occluder takes it, exactly as the game does when it switches between obstruction and door path: "clear" until its own first calculation is done.
+
+**Gunshots safe against SEB changes**
+- Everything that uses Sound Engine Backport internals (its 11-parameter shot context, private fields) now sits in separate methods whose call is protected. If SEB changes them, the SEB parts switch off for the session with one error line and shots play as SEB intends – before, the hook could fail before its own error handling and the shot stayed silent. SEB versions other than 1.0.x leave the SEB parts off (warning).
+
+**Reverb: nearly every concrete room at the +1.5 s limit**
+- Bare concrete (α 0.02) gave +4 … +5 s for almost every room, so all concrete rooms sounded the same. New setting `9. Reverb by Material / Min. absorption` (0.05): the rays only see walls, openings and furniture absorb too, so the mean α is never taken below 0.05 (at most twice the game's baked reverb). The air absorption inside the room (4mV term, ISO 354; ISO 9613-1 at 20 °C / 50 %) is now included, which shortens the high bands of large halls. The `[Reverb]` line reports how many rooms still reach the limit.
+
+**Smaller fixes**
+- Timbre is no longer calculated in Physics Mode, where it was never applied (`timbre 316 calculations, applied 0x`).
+- Looping sounds: their playback time restarts at 0 on every loop, so they counted as "just started" and their filter could jump; a loop that was already playing now glides.
+- Rows of windows: the remaining glass of a partly broken row was counted twice (the game already uses the size of the broken part); removed.
+- Sound log: rooms now show their names (`rooms src=… ear=…` was empty), and the weather in the file header is marked as incomplete when the raid weather is not there yet at raid start; the first complete reading follows as a `[Weather] complete` line.
+- Live tuning and F12 changes rebuild only what the setting affects: door/window values and the game's portal data only for `4. Doors and Windows` and `1. General / Enabled`, wall measurements for Physics Mode, materials, `Overall strength` and walls; everything else (air, reverb, loudness, …) no longer forces the game to recalculate every occlusion.
+- Errors: after the first three full error messages, the number of further errors is logged every 30 s (also with `Diagnostic log` off).
+
+**Checked and left unchanged**
+- The fog scale of the humidity estimate matches the game (`EFogType`: no fog 0.004, faint 0.015, fog 0.035, heavy 0.075).
+- The forest low-pass limit of 500 Hz matches the README.
+- Volume steps when you or a bot change between indoors and outdoors come from the game's indoor/outdoor factor switching at once; documented under known limits, not smoothed yet.
+- The minimum over transmission (dB scale in Physics Mode) and the game's diffraction/reflection heuristics is documented as a known limit.
+
+**Tests** (`Materialklang-KlangTest`, sections 15–20, 245 checks): the per-sound value with the log numbers (game: 57 octave jumps, 0.8.3: none), pool reset, wall lines (full rays, gap, offset lines in geometry, single surfaces, weights), reverb (old formula, floor, air), SEB version and error classes, loops, refresh rules, fog scale.
+
+## 0.8.2-beta
+
+Fix for one-shot sounds (explosions, bullet impacts, ricochets, dropped items) that sometimes sounded fully muffled in the open - e.g. an F1 grenade 17 m away outdoors on Ground Zero heard only as a dull "puff". The plugin reports the numeric version 0.8.2.
+
+**Cause** (found in a Ground Zero sound log of 0.8.1; the same lines are already in 0.6.0 logs, so it is not caused by the 0.8.1 steady-occlusion fix)
+- The game handles all one-shot sounds with one shared `MultiSourceSpatialAudioOccluder`. Each sound has its own pooled calculator (a room-path calculator *or* a transmission calculator), but every result is written into the *same* two fields of the occluder: the room-path calculator sets only `PropagationEffect`, the transmission calculator only `ObstructionEffect`. The other field keeps the value of whichever one-shot sound was calculated before.
+- `CalculateTotalEffect` uses `PropagationEffect > 0 ? PropagationEffect : ObstructionEffect`. A sound whose room path is clear (score 0, e.g. between two outdoor areas) therefore took the transmission score of an unrelated sound - here an impact behind terrain with 1.0. Physics Mode turns 1.0 into -30 dB and an 800 Hz low-pass. The reverse also happened: a transmission sound after a room-path sound with a score above 0 was treated as a room-path sound with the other sound's score.
+- In the sound log these lines show as `path=unknown [T=n/a D=n/a R=n/a effect=...]` for `@GameWorld` sources; several sounds at different places in the same frame had the identical effect. Vanilla has the same bug, but its volume curve ends at -4.4 dB, so it is barely audible there.
+
+**Fix**
+- Right before the game applies the occlusion of a one-shot sound, the field that belongs to no calculator of *that* sound is set to 0, so every one-shot sound uses only its own result. Active whenever the plugin is enabled. The 0.8.1 steady-occlusion fix (no flip-flop during recalculation) is unchanged.
+- New diagnostic line every 30 s: `One-shot sounds: N of M would have inherited the occlusion of another sound`.
+- Tests (`Materialklang-KlangTest`, section 14): the shared-field sequence from the log (game: 4 of 6 sounds with a foreign effect, the grenade at -30 dB instead of 0 dB; 0.8.2: none), edge cases, no allocations.
+
 ## 0.8.1-beta
 
 Fix for crackling, clicking and jumping volume behind walls. The plugin reports the numeric version 0.8.1.

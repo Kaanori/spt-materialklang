@@ -35,7 +35,7 @@ namespace Materialklang
         static volatile LuftTabelle tabelle = new LuftTabelle();
         static volatile LuftBaender baender = LuftBaender.Standard();     // Luftabsorption je Oktavband (fuer die Laubdaempfung, Wald.cs)
         static float naechste;
-        static bool neuBerechnen = true, meldeStart;
+        static bool neuBerechnen = true, meldeStart, vollGemeldet;
         static string letzteMeldung = "";
 
         // Luftdruck-Knoten des Servers (Zeit in Ticks, Druck in kPa)
@@ -105,7 +105,7 @@ namespace Materialklang
 
         internal static void RaidStart()
         {
-            meldeStart = true; naechste = 0f; letzteMeldung = "";
+            meldeStart = true; vollGemeldet = false; naechste = 0f; letzteMeldung = "";
             Lesen();
         }
 
@@ -220,10 +220,14 @@ namespace Materialklang
                 double.IsNaN(wolken) ? "n/a" : wolken.ToString("F2", inv));
         }
 
+        // 0.8.3: Beim Raidstart (AudioRoomStorage) sind die Wetterknoten oft noch nicht da (Druck n/a, Kurve noch Vorgabe).
+        internal static bool Vollstaendig => hatWetter && !double.IsNaN(druckKPa);
+
         /// <summary>Eine Zeile fuer den Kopf des Klang-Logs.</summary>
         internal static string Kopfzeile()
         {
-            string s = "weather: " + Text() + " | air absorption " + (An ? "ISO 9613-1 from weather" : "fixed curve");
+            string s = (Vollstaendig ? "weather: " : "weather (not complete yet at file start - the raid values follow in the first '[Weather] complete' line): ")
+                       + Text() + " | air absorption " + (An ? "ISO 9613-1 from weather" : "fixed curve");
             if (An) s += string.Format(CultureInfo.InvariantCulture, " | cut-off 50 m {0:F0} Hz, 100 m {1:F0} Hz, 300 m {2:F0} Hz (3 dB point, before clarity factor)",
                          tabelle.Hole(50f), tabelle.Hole(100f), tabelle.Hole(300f));
             return s;
@@ -235,10 +239,12 @@ namespace Materialklang
             string schluessel = string.Format(CultureInfo.InvariantCulture, "{0:F0}|{1:F0}|{2:F0}|{3}|{4}", temp, druckKPa, feuchte / 5.0,
                 regen > 0.02, nebel >= 0.012);
             bool start = meldeStart;
-            if (!start && schluessel == letzteMeldung) return;
+            bool voll = !vollGemeldet && Vollstaendig;     // erste vollstaendige Lesung dieses Raids immer melden
+            if (!start && !voll && schluessel == letzteMeldung) return;
             letzteMeldung = schluessel; meldeStart = false;
+            if (voll) vollGemeldet = true;
             if (ImLog == null || !ImLog.Value) return;
-            string z = "[Weather] " + (start ? "raid start: " : "changed: ") + Text();
+            string z = "[Weather] " + (voll ? (start ? "raid start (complete): " : "complete: ") : start ? "raid start (not complete yet): " : "changed: ") + Text();
             Plugin.Log.LogInfo(z);
             KlangLog.Text(z);
         }

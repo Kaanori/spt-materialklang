@@ -42,7 +42,7 @@ namespace Materialklang
             NahDistanz = c.Bind(s, "Close range (m)", 8f, new ConfigDescription("Within this distance the close-range floor applies.", new AcceptableValueRange<float>(0f, 50f)));
             NahBoden = c.Bind(s, "Close-range floor", 0.5f, new ConfigDescription("Lowest hearing-range factor inside the close range.", new AcceptableValueRange<float>(0f, 1f)));
             MaxDicke = c.Bind(s, "Max. thickness (m)", 2f, new ConfigDescription("Thicker (hills, solid bodies) -> floor value.", new AcceptableValueRange<float>(0.2f, 10f)));
-            StandardDicke = c.Bind(s, "Default thickness (m)", 0.1f, new ConfigDescription("For one-sided surfaces without a back face.", new AcceptableValueRange<float>(0f, 1f)));
+            StandardDicke = c.Bind(s, "Default thickness (m)", 0.1f, new ConfigDescription("For one-sided surfaces without a back face of solid groups (concrete/stone, soil, gravel, water, snow, unknown); thin groups use their typical thickness, never more than this.", new AcceptableValueRange<float>(0f, 1f)));
             MaxFlaechen = c.Bind(s, "Max. surfaces", 8, new ConfigDescription("More surfaces in the way -> floor value.", new AcceptableValueRange<int>(1, 16)));
             Budget = c.Bind(s, "Calculations per frame", 6, new ConfigDescription("CPU limit. Once reached, the old value / SAIN's value is used.", new AcceptableValueRange<int>(1, 50)));
             CacheZeit = c.Bind(s, "Cache time (s)", 0.75f, new ConfigDescription("How long a result is reused for the same bot and sound source.", new AcceptableValueRange<float>(0f, 5f)));
@@ -168,9 +168,10 @@ namespace Materialklang
                 for (int j = na - 1; j >= 0; j--)
                     if ((benutzt & (1UL << j)) == 0 && ausId[j] == einId[i] && aus[j] >= ein[i])
                     { dicke = aus[j] - ein[i]; benutzt |= 1UL << j; break; }
-                if (dicke < 0f) dicke = StandardDicke.Value;
-                if (dicke > MaxDicke.Value) return 0f;
                 int m = MaterialCache.Get(einId[i]);
+                // einseitige Flaeche: Dicke je Gruppe (0.8.3, wie die Wand zwischen Raeumen; vorher fuer alles 0,1 m)
+                if (dicke < 0f) dicke = Bauakustik.EinzelDicke(m, StandardDicke.Value);
+                if (dicke > MaxDicke.Value) return 0f;
                 x += Physik.An ? Physik.Daemmung(m, dicke) : Plugin.Oberflaeche[m].Value + Plugin.Dicke[m].Value * dicke;
             }
             if (Physik.An) return Physik.EnergieAusDb(Mathf.Min(x, Physik.Dynamik.Value) * Physik.Lautheit.Value);   // Exponent 0.5 -> Amplitude = Hoerweite

@@ -74,9 +74,11 @@ namespace Materialklang
         }
 
         /// <summary>Darf der Filter dieser Quelle sofort (ohne Rampe) gesetzt werden?
-        /// jedesBild = das Spiel fuehrt Filter/Lautstaerke der Quelle jedes Bild nach (sonst bliebe ein Zielwert ohne Rampe liegen).</summary>
-        internal static bool SofortZulassen(bool jedesBild, bool spielt, float sekImKlang)
-            => !jedesBild || !spielt || sekImKlang < FrischSek;
+        /// jedesBild = das Spiel fuehrt Filter/Lautstaerke der Quelle jedes Bild nach (sonst bliebe ein Zielwert ohne Rampe liegen).
+        /// 0.8.3: schleife = Endlos-Klang (AudioSource.loop); dessen Abspielzeit springt nach jedem Durchlauf auf 0 - er gilt nur dann
+        /// als "gerade gestartet", wenn er beim letzten Blick noch nicht lief (schonGelaufen = false).</summary>
+        internal static bool SofortZulassen(bool jedesBild, bool spielt, float sekImKlang, bool schleife = false, bool schonGelaufen = false)
+            => !jedesBild || !spielt || (sekImKlang < FrischSek && !(schleife && schonGelaufen));
 
         // ---- Gleiten der Grenzfrequenzen (FilterGleiten.cs ersetzt damit die lineare Rampe des Spiels) ----
         // Das Spiel gleitet linear in Hz (Lerp 5/s je Bild). Abwaerts ist das langsam, aufwaerts aus dem Physik-Bereich
