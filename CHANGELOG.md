@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.4-beta
+
+- **Reflection path no longer flips to "direct path clear" (game bug).** From the second reflection step on, the game kept reading index 0 of the batch as the direct ray – but there sits some reflection ray, and if that one flew into the open, the whole calculation counted as "direct path clear" (R = 0). Depending on frame timing a bot 55 m away behind buildings jumped several times a second between –1 dB (clear) and –24 to –31 dB (behind walls) – reported with the mark key on Streets, 08.11.2026. Vanilla only moves about 1 dB there, the physics mode made it audible. Now the real result of the direct ray from step 1 is kept and later steps no longer count as a direct ray. Diagnostic line "Reflection direct path …" every 30 s. Part of "Steady occlusion".
+- **Map export for the sound sandbox.** F12 > 11: "Export map for sandbox" cuts the level's collision geometry at ear height (settable) and writes walls with their game material and estimated thickness, plus doors and windows, to `BepInEx/Materialklang-Logs/sandbox-<map>-<height>.json`; the Material Sound Demo loads it with "Load map…". Runs over several frames, confirmation sound when done.
+
 ## 0.8.3-beta
 
 - `Mark odd sound key` now plays a short confirmation sound (the game's quest "sub-task complete" ding), or the error sound if the sound log is off – no need to check the log to know the mark was set.

@@ -2,6 +2,8 @@
 
 Sound that knows what a wall is made of. Concrete swallows the highs and lets a dull thump through, a wooden door is a weak barrier, a steel door a strong one, and a gunshot behind you sounds different from one in front of you. Works for **all** sounds in the game, not just gunshots.
 
+**🎧 Hear the difference yourself:** [Material Sound Demo](https://claude.ai/artifact/7BXLomAnuBnL6ofqfq41RC) – vanilla vs. Materialklang side by side, plus a sound sandbox where you build walls, doors and windows (or load a real map) and listen live, with or without ray tracing. Headphones recommended.
+
 > **BETA – early version.** Materialklang has been listened to in the F12 menu and sounds good, but it has **not yet been checked in real raids** (no raid log review, no long play sessions, only one tester). Expect rough edges and values that still need tuning. Feedback is very welcome: please open an issue and, if you can, attach the relevant lines of `BepInEx/LogOutput.log` (they start with `[Diagnostics]` or `[Reverb]`).
 
 ## How this mod was made (AI disclosure)
