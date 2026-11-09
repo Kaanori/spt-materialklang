@@ -510,4 +510,601 @@ namespace Materialklang
             return sb.Append("}}\n").ToString();
         }
     }
+
+    // ==========================================================================================
+    //  0.8.5 - Scan-Export: Geometrie per Physik-Abfrage statt aus Mesh-Daten (nicht lesbare MeshCollider: 99,9 % auf Customs).
+    //  Der Unity-Teil (KartenExport.cs) schiesst waagerechte Strahlen entlang Gitterlinien in x- und z-Richtung, jeweils vorwaerts
+    //  (Eintritte = Vorderseiten) und rueckwaerts (Austritte), und gibt je Linie die Treffer hierher. Reine Rechnung OHNE Unity:
+    //   1. LinieEintragen: Ein-/Austritt desselben Colliders paaren -> Belegungsraster (Zelle fest + Collider + gemessene Dicke).
+    //      Treffer ohne Partner (einseitige Flaeche, duenne Wand) markieren ihre Zelle trotzdem, Dicke = Gruppendicke.
+    //   2. Auswerten: Raster -> dicke Bereiche (> DuennGrenze, Abstandstransformation + Oeffnung) als Umriss (Marching Squares, Kante),
+    //      duenne Waende als Mittellinie (Zhang-Suen-Verduennung, m-Nachbarschaft), je Material getrennt, Douglas-Peucker,
+    //      Dicke = Median der gemessenen Dicken der Zellen.
+    // ==========================================================================================
+
+    /// <summary>Ein Treffer auf einer Scanlinie: T = Abstand vom Linienanfang (m), Eintritt = Vorderseite in Linienrichtung
+    /// (Vorwaertsstrahl), sonst Austritt (Rueckwaertsstrahl). Cos = |Flaechennormale . Linienrichtung| (Dicke senkrecht zur Wand).</summary>
+    internal struct ScanTreffer
+    {
+        public double T; public int Slot; public bool Eintritt; public float Cos;
+        public ScanTreffer(double t, int slot, bool eintritt, float cos) { T = t; Slot = slot; Eintritt = eintritt; Cos = cos; }
+    }
+
+    /// <summary>Belegungsraster. Zelle (i,j) hat die Mitte (X0 + (i+0,5)·Res, Z0 + (j+0,5)·Res); Index j·W + i.
+    /// x-Linie k laeuft durch die Zellmitten der Zeile k, z-Linie k durch die der Spalte k.</summary>
+    internal sealed class ScanRaster
+    {
+        internal const byte TrefferX = 1, TrefferZ = 2, InnenX = 4, InnenZ = 8, Kurz = 16, SlotTreffer = 32;
+        public readonly int W, H;
+        public readonly double X0, Z0, Res;
+        public readonly byte[] Flag;
+        public readonly ushort[] Slot;      // Collider-Slot + 1 (0 = keiner)
+        public readonly ushort[] DickeMm;   // kleinste gemessene Dicke in mm (0 = keine)
+        public ScanRaster(int w, int h, double x0, double z0, double res)
+        {
+            W = w; H = h; X0 = x0; Z0 = z0; Res = res;
+            Flag = new byte[w * h]; Slot = new ushort[w * h]; DickeMm = new ushort[w * h];
+        }
+        public double LaengeX => W * Res;
+        public double LaengeZ => H * Res;
+        /// <summary>fest: getroffen, kurz durchquert (bis KurzFuellung) oder lang durchquert aus BEIDEN Richtungen.</summary>
+        public bool Fest(int i)
+        {
+            byte f = Flag[i];
+            return (f & (TrefferX | TrefferZ | Kurz)) != 0 || (f & (InnenX | InnenZ)) == (InnenX | InnenZ);
+        }
+        public int Zellen => W * H;
+    }
+
+    internal static class KartenScan
+    {
+        /// <summary>Durchquerungen bis zu dieser Laenge (m) gelten aus einer Richtung als fest; laengere nur, wenn die Linie
+        /// der anderen Richtung durch dieselbe Zelle es bestaetigt (schuetzt vor falsch gepaarten offenen Meshes).</summary>
+        internal const double KurzFuellung = 2.0;
+        /// <summary>Laengere Ein-/Austrittspaare werden nicht gepaart (beide gelten als einzelne Flaechen).</summary>
+        internal const double MaxFuellung = 150.0;
+        /// <summary>Seitenast der Mittellinie, der hoechstens so viele Zellen lang ist, faellt weg (Rauschen der Verduennung).</summary>
+        internal const int AstMax = 3;
+
+        internal sealed class Zahlen
+        {
+            public int Paare, Einzel, FesteZellen, DickeZellen, DuenneZellen, Skelett, Umrisse, AesteWeg, Linien, Kanten, Mitten, OeffnungZellen;
+        }
+
+        // ------------------------------------------------------------------ 1. Linie -> Raster
+
+        /// <summary>Traeger einer Linie ins Raster: Treffer nach T sortieren, je Collider Eintritt mit dem naechsten Austritt
+        /// paaren (kein anderer Treffer desselben Colliders dazwischen, Laenge bis MaxFuellung). gruppenDicke[slot] = Dicke
+        /// fuer Treffer ohne Partner (m).</summary>
+        internal static void LinieEintragen(ScanRaster r, bool xLinie, int k, List<ScanTreffer> ev, IList<float> gruppenDicke, Zahlen z)
+        {
+            if (ev == null || ev.Count == 0) return;
+            // gleiche Stelle: Austritt vor Eintritt (zwei aneinanderstossende Teile desselben Colliders: erst das eine verlassen)
+            ev.Sort((a, b) => a.T != b.T ? a.T.CompareTo(b.T) : a.Eintritt.CompareTo(b.Eintritt));
+            var offen = new Dictionary<int, int>();   // slot -> Index des offenen Eintritts
+            for (int i = 0; i < ev.Count; i++)
+            {
+                var e = ev[i];
+                if (e.Eintritt)
+                {
+                    if (offen.TryGetValue(e.Slot, out int alt)) Einzeln(r, xLinie, k, ev[alt], gruppenDicke, z);
+                    offen[e.Slot] = i;
+                    continue;
+                }
+                if (offen.TryGetValue(e.Slot, out int ei))
+                {
+                    offen.Remove(e.Slot);
+                    var a = ev[ei];
+                    double len = e.T - a.T;
+                    if (len <= MaxFuellung)
+                    {
+                        Durchquerung(r, xLinie, k, a.T, e.T, e.Slot, Math.Max(a.Cos, 0.05f), z);
+                        continue;
+                    }
+                    Einzeln(r, xLinie, k, a, gruppenDicke, z);
+                }
+                Einzeln(r, xLinie, k, e, gruppenDicke, z);
+            }
+            foreach (int ei in offen.Values) Einzeln(r, xLinie, k, ev[ei], gruppenDicke, z);
+        }
+
+        static int Zelle(ScanRaster r, bool xLinie, int k, double t)
+        {
+            int n = xLinie ? r.W : r.H;
+            int c = (int)Math.Floor(t / r.Res);
+            if (c < 0) c = 0; else if (c >= n) c = n - 1;
+            return xLinie ? k * r.W + c : c * r.W + k;
+        }
+
+        static void Setzen(ScanRaster r, int idx, byte flag, int slot, double dicke, bool vonTreffer)
+        {
+            r.Flag[idx] |= flag;
+            if (vonTreffer && (r.Flag[idx] & ScanRaster.SlotTreffer) == 0) { r.Slot[idx] = (ushort)(slot + 1); r.Flag[idx] |= ScanRaster.SlotTreffer; }
+            else if (r.Slot[idx] == 0) r.Slot[idx] = (ushort)(slot + 1);
+            if (dicke <= 0) return;
+            int mm = (int)Math.Round(dicke * 1000.0);
+            if (mm < 1) mm = 1; else if (mm > 65000) mm = 65000;
+            if (r.DickeMm[idx] == 0 || mm < r.DickeMm[idx]) r.DickeMm[idx] = (ushort)mm;
+        }
+
+        static void Einzeln(ScanRaster r, bool xLinie, int k, ScanTreffer e, IList<float> gruppenDicke, Zahlen z)
+        {
+            double d = e.Slot >= 0 && e.Slot < gruppenDicke.Count ? gruppenDicke[e.Slot] : 0.15;
+            Setzen(r, Zelle(r, xLinie, k, e.T), xLinie ? ScanRaster.TrefferX : ScanRaster.TrefferZ, e.Slot, Math.Max(d, 0.002), true);
+            z.Einzel++;
+        }
+
+        static void Durchquerung(ScanRaster r, bool xLinie, int k, double t0, double t1, int slot, float cos, Zahlen z)
+        {
+            double dicke = (t1 - t0) * cos;
+            if (t1 - t0 < 0.005) { dicke = 0; }   // Beruehrung zweier Teile, keine Messung
+            byte treffer = xLinie ? ScanRaster.TrefferX : ScanRaster.TrefferZ;
+            byte innen = (t1 - t0) <= KurzFuellung ? ScanRaster.Kurz : (xLinie ? ScanRaster.InnenX : ScanRaster.InnenZ);
+            int n = xLinie ? r.W : r.H;
+            // Austritt genau auf einer Zellgrenze gehoert zur Zelle davor
+            int c0 = Math.Max(0, Math.Min(n - 1, (int)Math.Floor(t0 / r.Res))), c1 = Math.Max(c0, Math.Min(n - 1, (int)Math.Floor(t1 / r.Res - 1e-6)));
+            for (int c = c0; c <= c1; c++)
+            {
+                int idx = xLinie ? k * r.W + c : c * r.W + k;
+                bool rand = c == c0 || c == c1;
+                Setzen(r, idx, rand ? (byte)(treffer | innen) : innen, slot, dicke > 0 ? Math.Max(dicke, 0.002) : 0, rand);
+            }
+            z.Paare++;
+        }
+
+        // ------------------------------------------------------------------ 2. Raster -> Waende
+
+        /// <summary>Raster in Wandsegmente. slotMat[slot] = Gruppe, gruppenDicke[slot] = Ersatzdicke (m), oeffnungen = Tueren/Fenster
+        /// (ihre Zellen werden freigeraeumt, damit keine Wand durch die Oeffnung laeuft). duennGrenze: breiter = Umriss.</summary>
+        internal static List<Seg> Auswerten(ScanRaster r, IList<int> slotMat, IList<float> gruppenDicke, List<(P2 a, P2 b)> oeffnungen, Zahlen z,
+            double duennGrenze = KartenSchnitt.DuennGrenze, int unbekannt = 12)
+        {
+            int W = r.W, H = r.H, N = W * H;
+            if (oeffnungen != null) foreach (var o in oeffnungen) z.OeffnungZellen += Freiraeumen(r, o.a, o.b);
+            var fest = new byte[N];
+            for (int i = 0; i < N; i++) if (r.Fest(i)) { fest[i] = 1; z.FesteZellen++; }
+
+            // dicke Bereiche: Kern = Zellen tiefer als duennGrenze/2 in fest (Chamfer 3-4), dann um dieselbe Tiefe in fest erweitert
+            var tiefe = Chamfer(fest, W, H, true);
+            int schwelle = (int)Math.Ceiling(3.0 * ((duennGrenze / r.Res) + 1.0) / 2.0);   // Streifen > duennGrenze breit hat eine Mitte mit dieser Tiefe
+            var kern = new byte[N];
+            bool irgendKern = false;
+            for (int i = 0; i < N; i++) if (fest[i] != 0 && tiefe[i] >= schwelle) { kern[i] = 1; irgendKern = true; }
+            var dick = new byte[N];
+            if (irgendKern)
+            {
+                var abKern = Chamfer(kern, W, H, false);
+                for (int i = 0; i < N; i++) if (fest[i] != 0 && abKern[i] <= schwelle) { dick[i] = 1; z.DickeZellen++; }
+            }
+            var duenn = new byte[N];
+            for (int i = 0; i < N; i++) if (fest[i] != 0 && dick[i] == 0) { duenn[i] = 1; z.DuenneZellen++; }
+            fest = null; tiefe = null; kern = null;
+
+            var aus = new List<Seg>();
+            double tol = 0.5 * r.Res + 1e-6;
+            Umriss(r, dick, slotMat, gruppenDicke, unbekannt, tol, aus, z);
+            Mittellinien(r, duenn, dick, slotMat, gruppenDicke, unbekannt, tol, aus, z);
+            var fertig = new List<Seg>(aus.Count);
+            foreach (var s in aus) if (s.Laenge >= 0.05) fertig.Add(s);
+            return fertig;
+        }
+
+        /// <summary>Zellen, deren Mitte hoechstens 0,6 Zellen neben der Oeffnungslinie liegt (Enden um 10 cm gekuerzt), leeren.</summary>
+        internal static int Freiraeumen(ScanRaster r, P2 a, P2 b)
+        {
+            double dx = b.X - a.X, dz = b.Z - a.Z, l = Math.Sqrt(dx * dx + dz * dz);
+            if (l < 0.3) return 0;
+            dx /= l; dz /= l;
+            double t0 = 0.1, t1 = l - 0.1, band = 0.6 * r.Res;
+            int i0 = (int)Math.Floor((Math.Min(a.X, b.X) - band - r.X0) / r.Res) - 1, i1 = (int)Math.Floor((Math.Max(a.X, b.X) + band - r.X0) / r.Res) + 1;
+            int j0 = (int)Math.Floor((Math.Min(a.Z, b.Z) - band - r.Z0) / r.Res) - 1, j1 = (int)Math.Floor((Math.Max(a.Z, b.Z) + band - r.Z0) / r.Res) + 1;
+            int n = 0;
+            for (int j = Math.Max(0, j0); j <= Math.Min(r.H - 1, j1); j++)
+                for (int i = Math.Max(0, i0); i <= Math.Min(r.W - 1, i1); i++)
+                {
+                    double cx = r.X0 + (i + 0.5) * r.Res - a.X, cz = r.Z0 + (j + 0.5) * r.Res - a.Z;
+                    double t = cx * dx + cz * dz, q = Math.Abs(-cx * dz + cz * dx);
+                    if (t < t0 || t > t1 || q > band) continue;
+                    int idx = j * r.W + i;
+                    if (r.Flag[idx] != 0) { r.Flag[idx] = 0; n++; }
+                }
+            return n;
+        }
+
+        /// <summary>Chamfer-3-4-Abstand (gesaettigt bei 255). innen = true: Abstand fester Zellen zur naechsten leeren
+        /// (ausserhalb des Rasters = leer); innen = false: Abstand jeder Zelle zur naechsten gesetzten.</summary>
+        internal static byte[] Chamfer(byte[] m, int W, int H, bool innen)
+        {
+            int N = W * H;
+            var d = new int[N];
+            const int Gross = 1 << 20;
+            for (int i = 0; i < N; i++) d[i] = innen ? (m[i] != 0 ? Gross : 0) : (m[i] != 0 ? 0 : Gross);
+            int Rand(int x, int y) => innen ? 0 : Gross;
+            for (int y = 0; y < H; y++)
+                for (int x = 0; x < W; x++)
+                {
+                    int i = y * W + x, v = d[i];
+                    if (v == 0) continue;
+                    int l = x > 0 ? d[i - 1] : Rand(x - 1, y), u = y > 0 ? d[i - W] : Rand(x, y - 1);
+                    int ul = x > 0 && y > 0 ? d[i - W - 1] : Rand(x - 1, y - 1), ur = x < W - 1 && y > 0 ? d[i - W + 1] : Rand(x + 1, y - 1);
+                    v = Math.Min(v, Math.Min(l + 3, u + 3)); v = Math.Min(v, Math.Min(ul + 4, ur + 4));
+                    d[i] = v;
+                }
+            for (int y = H - 1; y >= 0; y--)
+                for (int x = W - 1; x >= 0; x--)
+                {
+                    int i = y * W + x, v = d[i];
+                    if (v == 0) continue;
+                    int rr = x < W - 1 ? d[i + 1] : Rand(x + 1, y), dn = y < H - 1 ? d[i + W] : Rand(x, y + 1);
+                    int dr = x < W - 1 && y < H - 1 ? d[i + W + 1] : Rand(x + 1, y + 1), dl = x > 0 && y < H - 1 ? d[i + W - 1] : Rand(x - 1, y + 1);
+                    v = Math.Min(v, Math.Min(rr + 3, dn + 3)); v = Math.Min(v, Math.Min(dr + 4, dl + 4));
+                    d[i] = v;
+                }
+            var b = new byte[N];
+            for (int i = 0; i < N; i++) b[i] = (byte)Math.Min(255, d[i]);
+            return b;
+        }
+
+        // ------------------------------------------------------------------ Material / Dicke je Zelle
+
+        static int MatVon(ScanRaster r, int idx, IList<int> slotMat, int unbekannt)
+        {
+            int s = r.Slot[idx] - 1;
+            if (s >= 0 && s < slotMat.Count) return slotMat[s];
+            // Zelle ohne Collider (lang von beiden Seiten gefuellt): Nachbarn
+            int x = idx % r.W, y = idx / r.W;
+            for (int dy = -1; dy <= 1; dy++)
+                for (int dx = -1; dx <= 1; dx++)
+                {
+                    int xx = x + dx, yy = y + dy;
+                    if (xx < 0 || yy < 0 || xx >= r.W || yy >= r.H) continue;
+                    int q = r.Slot[yy * r.W + xx] - 1;
+                    if (q >= 0 && q < slotMat.Count) return slotMat[q];
+                }
+            return unbekannt;
+        }
+
+        static double Median(List<double> v, double ersatz)
+        {
+            if (v.Count == 0) return ersatz;
+            v.Sort();
+            int n = v.Count;
+            return (n & 1) == 1 ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]);
+        }
+
+        /// <summary>Polylinie (Punkte p, je Punkt Zelle) in Stuecke gleichen Materials teilen, je Stueck Douglas-Peucker,
+        /// Dicke je Segment = Median der Zelldicken zwischen seinen Endpunkten.</summary>
+        static void Ausgeben(ScanRaster r, List<P2> p, List<int> zellen, IList<int> slotMat, IList<float> gruppenDicke, int unbekannt, double tol,
+            SegArt art, bool geschlossen, List<Seg> aus)
+        {
+            int n = p.Count;
+            if (n < 2) return;
+            var mat = new int[n];
+            for (int i = 0; i < n; i++) mat[i] = MatVon(r, zellen[i], slotMat, unbekannt);
+            // einzelne abweichende Zellen zwischen gleichem Material glätten
+            for (int i = 1; i + 1 < n; i++) if (mat[i] != mat[i - 1] && mat[i - 1] == mat[i + 1]) mat[i] = mat[i - 1];
+            int start = -1;
+            if (geschlossen)
+            {
+                // Anfang an einen Materialwechsel legen, damit ein Stueck nicht ueber den Ringanfang zerfaellt; ohne Wechsel an den
+                // Punkt mit kleinstem x (dann z) - eine Ecke der Huelle, die Douglas-Peucker ohnehin behaelt
+                for (int i = 1; i < n; i++) if (mat[i] != mat[i - 1]) { start = i; break; }
+                if (start < 0)
+                {
+                    start = 0;
+                    for (int i = 1; i < n; i++) if (p[i].X < p[start].X - 1e-9 || (Math.Abs(p[i].X - p[start].X) <= 1e-9 && p[i].Z < p[start].Z)) start = i;
+                }
+            }
+            if (start < 0) start = 0;
+            var q = new List<P2>(n + 1); var qz = new List<int>(n + 1); var qm = new List<int>(n + 1);
+            int cnt = geschlossen ? n + 1 : n;
+            for (int k = 0; k < cnt; k++) { int i = (start + k) % n; q.Add(p[i]); qz.Add(zellen[i]); qm.Add(mat[i]); }
+            int a = 0;
+            for (int i = 1; i <= q.Count; i++)
+            {
+                if (i < q.Count && qm[i] == qm[a]) continue;
+                int b = Math.Min(i, q.Count - 1);   // Stueck a..b (b = erster Punkt des naechsten Materials: gemeinsamer Punkt, keine Luecke)
+                if (b > a) Stueck(r, q, qz, a, b, qm[a], gruppenDicke, tol, art, aus);
+                a = b;
+                if (i >= q.Count - 1) break;
+            }
+        }
+
+        static void Stueck(ScanRaster r, List<P2> q0, List<int> qz, int a, int b, int mat, IList<float> gruppenDicke, double tol, SegArt art, List<Seg> aus)
+        {
+            // Treppenstufen des Rasters glaetten (Mittel mit den Nachbarn, Enden fest), dann Douglas-Peucker
+            var q = new List<P2>(q0);
+            if (art == SegArt.Mitte)   // nur Mittellinien (m-Pfad = Treppe); Umrisse behalten ihre Ecken
+            for (int i = a + 1; i < b; i++)
+                q[i] = new P2(0.25 * q0[i - 1].X + 0.5 * q0[i].X + 0.25 * q0[i + 1].X, 0.25 * q0[i - 1].Z + 0.5 * q0[i].Z + 0.25 * q0[i + 1].Z);
+            var keep = DouglasPeucker(q, a, b, tol);
+            var werte = new List<double>();
+            for (int k = 0; k + 1 < keep.Count; k++)
+            {
+                int i0 = keep[k], i1 = keep[k + 1];
+                werte.Clear();
+                double ersatz = 0.15;
+                for (int i = i0; i <= i1; i++)
+                {
+                    int c = qz[i];
+                    if (r.DickeMm[c] > 0) werte.Add(r.DickeMm[c] / 1000.0);
+                    else { int s = r.Slot[c] - 1; if (s >= 0 && s < gruppenDicke.Count) ersatz = gruppenDicke[s]; }
+                }
+                double d = Median(werte, ersatz);
+                aus.Add(new Seg { AX = q[i0].X, AZ = q[i0].Z, BX = q[i1].X, BZ = q[i1].Z, Mat = mat, Dicke = (float)Math.Max(d, 0.002), Art = art });
+            }
+        }
+
+        /// <summary>Douglas-Peucker auf p[a..b]; liefert die behaltenen Indizes (aufsteigend, mit a und b).</summary>
+        internal static List<int> DouglasPeucker(List<P2> p, int a, int b, double tol)
+        {
+            var keep = new List<int> { a };
+            var stapel = new Stack<(int, int)>();
+            var behalten = new SortedSet<int> { a, b };
+            stapel.Push((a, b));
+            while (stapel.Count > 0)
+            {
+                var (i0, i1) = stapel.Pop();
+                if (i1 - i0 < 2) continue;
+                P2 u = p[i0], v = p[i1];
+                double dx = v.X - u.X, dz = v.Z - u.Z, l = Math.Sqrt(dx * dx + dz * dz);
+                double best = -1; int bi = -1;
+                for (int i = i0 + 1; i < i1; i++)
+                {
+                    double ex = p[i].X - u.X, ez = p[i].Z - u.Z;
+                    double d = l < 1e-12 ? Math.Sqrt(ex * ex + ez * ez) : Math.Abs(ex * dz - ez * dx) / l;
+                    if (d > best) { best = d; bi = i; }
+                }
+                if (best > tol) { behalten.Add(bi); stapel.Push((i0, bi)); stapel.Push((bi, i1)); }
+            }
+            keep.Clear(); keep.AddRange(behalten);
+            return keep;
+        }
+
+        // ------------------------------------------------------------------ Umriss (Marching Squares)
+
+        /// <summary>Umriss der dicken Bereiche: Abtastpunkte = Zellmitten, Kantenpunkte = Mitte zwischen fester und leerer Zelle,
+        /// gegen den Uhrzeigersinn um das Feste; Sattel = Diagonale verbunden (keine Luecke in schraegen Waenden).</summary>
+        static void Umriss(ScanRaster r, byte[] m, IList<int> slotMat, IList<float> gruppenDicke, int unbekannt, double tol, List<Seg> aus, Zahlen z)
+        {
+            int W = r.W, H = r.H, W2 = W + 2;
+            bool S(int x, int y) => x >= 0 && y >= 0 && x < W && y < H && m[y * W + x] != 0;
+            // Kanten-Id: waagerechte Kante zwischen (x,y)-(x+1,y): 2·((y+1)·W2 + x+1); senkrechte (x,y)-(x,y+1): +1
+            int Hk(int x, int y) => 2 * ((y + 1) * W2 + (x + 1));
+            int Vk(int x, int y) => 2 * ((y + 1) * W2 + (x + 1)) + 1;
+            var next = new Dictionary<int, int>();
+            var zelle = new Dictionary<int, int>();
+            var ecke = new bool[4]; var kid = new int[4]; var kx = new int[4]; var ky = new int[4];
+            for (int y = -1; y < H; y++)
+                for (int x = -1; x < W; x++)
+                {
+                    // Ecken gegen den Uhrzeigersinn: 0 (x,y), 1 (x+1,y), 2 (x+1,y+1), 3 (x,y+1)
+                    ecke[0] = S(x, y); ecke[1] = S(x + 1, y); ecke[2] = S(x + 1, y + 1); ecke[3] = S(x, y + 1);
+                    if (ecke[0] == ecke[1] && ecke[1] == ecke[2] && ecke[2] == ecke[3]) continue;
+                    // Kante e verbindet Ecke e und Ecke e+1
+                    kid[0] = Hk(x, y); kid[1] = Vk(x + 1, y); kid[2] = Hk(x, y + 1); kid[3] = Vk(x, y);
+                    kx[0] = x; ky[0] = y; kx[1] = x + 1; ky[1] = y; kx[2] = x + 1; ky[2] = y + 1; kx[3] = x; ky[3] = y + 1;
+                    for (int e = 0; e < 4; e++)
+                    {
+                        if (!(ecke[e] && !ecke[(e + 1) & 3])) continue;      // Start: fest -> leer
+                        for (int f = 1; f < 4; f++)
+                        {
+                            int g = (e + f) & 3;
+                            if (!ecke[g] && ecke[(g + 1) & 3])          // naechstes Ende: leer -> fest
+                            {
+                                next[kid[e]] = kid[g];
+                                zelle[kid[e]] = ky[e] * W + kx[e];
+                                break;
+                            }
+                        }
+                    }
+                }
+            var pkt = new List<P2>(); var zl = new List<int>();
+            while (next.Count > 0)
+            {
+                int start = -1;
+                foreach (var kv in next) { start = kv.Key; break; }
+                pkt.Clear(); zl.Clear();
+                int id = start;
+                while (next.TryGetValue(id, out int nx))
+                {
+                    next.Remove(id);
+                    pkt.Add(Kantenpunkt(r, id, W2)); zl.Add(zelle[id]);
+                    id = nx;
+                    if (id == start) break;
+                }
+                z.Umrisse++;
+                int vor = aus.Count;
+                Ausgeben(r, pkt, zl, slotMat, gruppenDicke, unbekannt, tol, SegArt.Kante, id == start, aus);
+                z.Kanten += aus.Count - vor;
+            }
+        }
+
+        static P2 Kantenpunkt(ScanRaster r, int id, int W2)
+        {
+            int c = id >> 1, x = c % W2 - 1, y = c / W2 - 1;
+            return (id & 1) == 0
+                ? new P2(r.X0 + (x + 1) * r.Res, r.Z0 + (y + 0.5) * r.Res)
+                : new P2(r.X0 + (x + 0.5) * r.Res, r.Z0 + (y + 1) * r.Res);
+        }
+
+        // ------------------------------------------------------------------ Mittellinien (Verduennung)
+
+        static readonly int[] NX = { 0, 1, 1, 1, 0, -1, -1, -1 };   // P2..P9: N, NO, O, SO, S, SW, W, NW (N = +y)
+        static readonly int[] NY = { 1, 1, 0, -1, -1, -1, 0, 1 };
+
+        /// <summary>Zhang-Suen-Verduennung auf m (in place), nur Zellen der Liste.</summary>
+        internal static void Verduennen(byte[] m, int W, int H, List<int> zellen)
+        {
+            var weg = new List<int>();
+            var p = new bool[8];
+            bool geaendert = true;
+            while (geaendert)
+            {
+                geaendert = false;
+                for (int schritt = 0; schritt < 2; schritt++)
+                {
+                    weg.Clear();
+                    foreach (int i in zellen)
+                    {
+                        if (m[i] == 0) continue;
+                        int x = i % W, y = i / W, b = 0;
+                        for (int k = 0; k < 8; k++)
+                        {
+                            int xx = x + NX[k], yy = y + NY[k];
+                            p[k] = xx >= 0 && yy >= 0 && xx < W && yy < H && m[yy * W + xx] != 0;
+                            if (p[k]) b++;
+                        }
+                        if (b < 2 || b > 6) continue;
+                        int a = 0;
+                        for (int k = 0; k < 8; k++) if (!p[k] && p[(k + 1) & 7]) a++;
+                        if (a != 1) continue;
+                        // p[0]=P2(N) p[2]=P4(O) p[4]=P6(S) p[6]=P8(W)
+                        if (schritt == 0 ? (p[0] && p[2] && p[4]) || (p[2] && p[4] && p[6]) : (p[0] && p[2] && p[6]) || (p[0] && p[4] && p[6])) continue;
+                        weg.Add(i);
+                    }
+                    foreach (int i in weg) m[i] = 0;
+                    if (weg.Count > 0) geaendert = true;
+                }
+                zellen.RemoveAll(i => m[i] == 0);
+            }
+        }
+
+        /// <summary>m-Nachbarn: waagerecht/senkrecht immer, schraeg nur, wenn keiner der beiden gemeinsamen geraden Nachbarn gesetzt ist
+        /// (so wird eine Treppe ein Pfad und kein Dreieck).</summary>
+        static int MNachbarn(byte[] m, int W, int H, int i, int[] aus)
+        {
+            int x = i % W, y = i / W, n = 0;
+            bool G(int xx, int yy) => xx >= 0 && yy >= 0 && xx < W && yy < H && m[yy * W + xx] != 0;
+            for (int k = 0; k < 8; k++)
+            {
+                int xx = x + NX[k], yy = y + NY[k];
+                if (!G(xx, yy)) continue;
+                if ((k & 1) == 1 && (G(x + NX[k], y) || G(x, y + NY[k]))) continue;
+                aus[n++] = yy * W + xx;
+            }
+            return n;
+        }
+
+        static void Mittellinien(ScanRaster r, byte[] duenn, byte[] dick, IList<int> slotMat, IList<float> gruppenDicke, int unbekannt, double tol,
+            List<Seg> aus, Zahlen z)
+        {
+            int W = r.W, H = r.H;
+            var zellen = new List<int>();
+            for (int i = 0; i < duenn.Length; i++) if (duenn[i] != 0) zellen.Add(i);
+            if (zellen.Count == 0) return;
+            var vorher = (byte[])duenn.Clone();
+            Verduennen(duenn, W, H, zellen);
+            z.Skelett = zellen.Count;
+            var nb = new int[8]; var nb2 = new int[8];
+            var grad = new Dictionary<int, int>(zellen.Count);
+            foreach (int i in zellen) grad[i] = MNachbarn(duenn, W, H, i, nb);
+            var besucht = new HashSet<long>();
+            long Kante(int a, int b) => a < b ? ((long)a << 32) | (uint)b : ((long)b << 32) | (uint)a;
+            var linien = new List<List<int>>();
+
+            List<int> Gehen(int von, int erst)
+            {
+                var pfad = new List<int> { von, erst };
+                besucht.Add(Kante(von, erst));
+                int vor = von, cur = erst;
+                while (grad[cur] == 2)
+                {
+                    int n = MNachbarn(duenn, W, H, cur, nb2), nx = -1;
+                    for (int k = 0; k < n; k++) if (nb2[k] != vor && !besucht.Contains(Kante(cur, nb2[k]))) { nx = nb2[k]; break; }
+                    if (nx < 0) break;
+                    besucht.Add(Kante(cur, nx));
+                    pfad.Add(nx); vor = cur; cur = nx;
+                }
+                return pfad;
+            }
+            foreach (int i in zellen)
+            {
+                if (grad[i] == 2) continue;
+                int n = MNachbarn(duenn, W, H, i, nb);
+                var eigene = new int[n]; Array.Copy(nb, eigene, n);
+                foreach (int q in eigene) if (!besucht.Contains(Kante(i, q))) linien.Add(Gehen(i, q));
+            }
+            // Ringe ohne Knoten (geschlossene Raeume)
+            var ringe = new List<List<int>>();
+            foreach (int i in zellen)
+            {
+                if (grad[i] != 2) continue;
+                int n = MNachbarn(duenn, W, H, i, nb);
+                int q = -1;
+                for (int k = 0; k < n; k++) if (!besucht.Contains(Kante(i, nb[k]))) { q = nb[k]; break; }
+                if (q < 0) continue;
+                var pfad = Gehen(i, q);
+                if (pfad[pfad.Count - 1] != i && n == 2) { int a = pfad[pfad.Count - 1]; if (!besucht.Contains(Kante(a, i))) { besucht.Add(Kante(a, i)); } pfad.Add(i); }
+                ringe.Add(pfad);
+            }
+            // Seitenaeste: Endpunkt -> Knoten mit Grad >= 3, hoechstens AstMax Zellen
+            var pkt = new List<P2>(); var zl = new List<int>();
+            foreach (var l in linien)
+            {
+                int ga = grad[l[0]], gb = grad[l[l.Count - 1]];
+                if (l.Count - 1 <= AstMax && ((ga == 1 && gb >= 3) || (gb == 1 && ga >= 3))) { z.AesteWeg++; continue; }
+                pkt.Clear(); zl.Clear();
+                foreach (int c in l) { pkt.Add(Mitte(r, c)); zl.Add(c); }
+                // freies Ende an einen dicken Bereich heranziehen (bis an dessen Umriss, halbe Zelle)
+                Verlaengern(r, dick, vorher, l, ga, pkt, zl, true);
+                Verlaengern(r, dick, vorher, l, gb, pkt, zl, false);
+                z.Linien++;
+                int vor = aus.Count;
+                Ausgeben(r, pkt, zl, slotMat, gruppenDicke, unbekannt, tol, SegArt.Mitte, false, aus);
+                z.Mitten += aus.Count - vor;
+            }
+            foreach (var l in ringe)
+            {
+                pkt.Clear(); zl.Clear();
+                bool zu = l.Count > 3 && l[0] == l[l.Count - 1];
+                int bis = zu ? l.Count - 1 : l.Count;
+                for (int k = 0; k < bis; k++) { pkt.Add(Mitte(r, l[k])); zl.Add(l[k]); }
+                z.Linien++;
+                int vor = aus.Count;
+                Ausgeben(r, pkt, zl, slotMat, gruppenDicke, unbekannt, tol, SegArt.Mitte, zu, aus);
+                z.Mitten += aus.Count - vor;
+            }
+        }
+
+        static P2 Mitte(ScanRaster r, int c) => new P2(r.X0 + (c % r.W + 0.5) * r.Res, r.Z0 + (c / r.W + 0.5) * r.Res);
+
+        /// <summary>Freies Ende einer Mittellinie: an einen angrenzenden dicken Bereich bis an dessen Umriss heranziehen, sonst in
+        /// Linienrichtung bis ans Ende der festen Zellen vor der Verduennung (die Verduennung kuerzt Enden um bis zu eine halbe Wandbreite).</summary>
+        static void Verlaengern(ScanRaster r, byte[] dick, byte[] vorher, List<int> l, int grad, List<P2> pkt, List<int> zl, bool vorne)
+        {
+            if (grad != 1) return;
+            int c = vorne ? l[0] : l[l.Count - 1];
+            int x = c % r.W, y = c / r.W;
+            for (int k = 0; k < 8; k++)
+            {
+                int xx = x + NX[k], yy = y + NY[k];
+                if (xx < 0 || yy < 0 || xx >= r.W || yy >= r.H || dick[yy * r.W + xx] == 0) continue;
+                var p = Mitte(r, c); var q = Mitte(r, yy * r.W + xx);
+                var e = new P2((p.X + q.X) * 0.5, (p.Z + q.Z) * 0.5);
+                if (vorne) { pkt.Insert(0, e); zl.Insert(0, c); } else { pkt.Add(e); zl.Add(c); }
+                return;
+            }
+            // Richtung aus den letzten (bis zu 4) Zellen
+            int back = Math.Min(4, l.Count - 1);
+            if (back < 1) return;
+            int c2 = vorne ? l[back] : l[l.Count - 1 - back];
+            P2 pe = Mitte(r, c), pb = Mitte(r, c2);
+            double dx = pe.X - pb.X, dz = pe.Z - pb.Z, len = Math.Sqrt(dx * dx + dz * dz);
+            if (len < 1e-9) return;
+            dx /= len; dz /= len;
+            double step = 0.25 * r.Res, weit = 0;
+            for (int s = 1; s <= 4 * 8; s++)
+            {
+                double px = pe.X + dx * step * s, pz = pe.Z + dz * step * s;
+                int i = (int)Math.Floor((px - r.X0) / r.Res), j = (int)Math.Floor((pz - r.Z0) / r.Res);
+                if (i < 0 || j < 0 || i >= r.W || j >= r.H || vorher[j * r.W + i] == 0) break;
+                weit = step * s;
+            }
+            weit += 0.5 * step;   // bis in die Mitte zwischen letzter fester Abtastung und der ersten leeren
+            if (weit < 0.5 * step + 1e-9 && vorher[c] != 0) weit = 0.5 * r.Res;   // Endzelle selbst: bis an ihren Rand
+            var ep = new P2(pe.X + dx * weit, pe.Z + dz * weit);
+            if (vorne) { pkt.Insert(0, ep); zl.Insert(0, c); } else { pkt.Add(ep); zl.Add(c); }
+        }
+    }
 }

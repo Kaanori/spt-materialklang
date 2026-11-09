@@ -29,6 +29,9 @@ namespace Materialklang
         internal static ConfigEntry<bool> DbAn, BaenderAn, SummeAn, RImmer, RaumAn, FlankeAn;
         internal static ConfigEntry<float> RMaxDist;
         internal static ConfigEntry<float> RVerlust, RaumDiffus, RaumMax, RaumMaxFlaeche, BandStaerke, Keil;
+        internal static ConfigEntry<float> BlendMs, RangBreite;   // 0.8.5
+        internal static double BlendSek => BlendMs != null ? BlendMs.Value / 1000.0 : 0.3;
+        static double Zeit => Time.realtimeSinceStartup;
 
         internal static bool An => Physik.An && DbAn != null && DbAn.Value;
         internal static bool Baender => Physik.An && BaenderAn != null && BaenderAn.Value;
@@ -79,6 +82,13 @@ namespace Materialklang
             FlankeAn = c.Bind(Sek, "Flanking transmission", true,
                 "Physics mode: sound also travels around a wall through the floor, ceiling and side walls (EN ISO 12354-1, junction values of a rigid cross junction). " +
                 "Replaces the fixed 60 dB cap where the room is known: heavy walls between light floors let less through than the mass law says. Applies live.");
+            BlendMs = c.Bind(Sek, "Path blend time (ms)", 300f,
+                new ConfigDescription("With the energy sum: a path that appears fades in, one that disappears keeps its last value and fades out over this time, " +
+                    "and a path that jumps is cross-faded (room routes via doors/windows and the edge/reflection paths). 0 = switch at once (as in 0.8.4). Applies live.",
+                    new AcceptableValueRange<float>(0f, 1000f)));
+            RangBreite = c.Bind(Sek, "Soft rank width (dB)", 6f,
+                new ConfigDescription("Room routes: the 3 loudest routes count fully, weaker ones fade out over this level range below them instead of a hard cut " +
+                    "(and everything more than 46 dB below the loudest). 0 = hard top 3. Applies live.", new AcceptableValueRange<float>(0f, 20f)));
             SettingsLive(DbAn); SettingsLive(SummeAn); SettingsLive(RImmer);
         }
 
@@ -304,6 +314,7 @@ namespace Materialklang
         static readonly ConditionalWeakTable<SpatialAudioOcclusionCombinedCalculator, Info>.CreateValueCallback Neu = _ => new Info();
 
         // Diagnose
+        static int dBlenden;
         static int dSchnapp, dFrei, dBestT, dBestD, dBestR, dDGehalten, dRGehalten, dRHyst, dRLauf, dRExtra, dTStrahlen, dDStrahlen, dRBefehle, dRBefehleExtra;
         static double dSumMin, dSumSumme; static int dSumN;
         internal static int TStrahlenZaehlen { set { dTStrahlen += value; } }
@@ -374,6 +385,13 @@ namespace Materialklang
 
         static void Schnappschuss(SpatialAudioOcclusionCombinedCalculator c, Info inf)
         {
+            long t0 = Laufzeit.Jetzt;     // 0.8.5: Zeitmessung (Diagnosezeile der Raumwege)
+            try { SchnappschussKern(c, inf); }
+            finally { Raumweg.ZeitWege.Dazu(t0, Time.frameCount); }
+        }
+
+        static void SchnappschussKern(SpatialAudioOcclusionCombinedCalculator c, Info inf)
+        {
             Frequenzen();
             float dyn = Physik.Dynamik.Value;
             var res = c.LastAggregateResult;
@@ -393,6 +411,7 @@ namespace Materialklang
                     freiT = bT;
                 }
                 WegeKern.Auswerten(z, true, false, null, 0, false, false, false, null, false, false, false, null, q, h, dyn, Summe, freiT: freiT);
+                Blende(z);
                 dFrei++;
                 return;
             }
@@ -453,6 +472,7 @@ namespace Materialklang
             }
 
             WegeKern.Auswerten(z, false, c._ranTransmission, bT, tFrei, c._ranDiffraction, dDirekt, dHat, bD, c._ranReflection, rDirekt, rHat, bR, q, h, dyn, Summe);
+            Blende(z);
             if (z.Bester == 1) dBestT++; else if (z.Bester == 2) dBestD++; else if (z.Bester == 3) dBestR++;
             if (z.DGehalten) dDGehalten++;
             if (z.RGehalten) dRGehalten++;
@@ -460,6 +480,29 @@ namespace Materialklang
             // Vergleich Minimum (lautester Weg) gegen Summe im Bezugsband
             double minDb = z.Bester == 1 ? z.T[0] : z.Bester == 2 ? z.D[0] : z.Bester == 3 ? z.R[0] : -dyn;
             dSumMin += -minDb; dSumSumme += -z.Ergebnis[0]; dSumN++;
+        }
+
+        // 0.8.5: D/R zeitlich ueberblenden (nur mit Energiesumme; sonst gilt das Ergebnis sofort)
+        static void Blende(WegZustand z)
+        {
+            if (!Summe) { z.DBl.Vergessen(); z.RBl.Vergessen(); return; }
+            bool lief = z.Blendet;
+            WegeKern.BlendeSetzen(z, Zeit, BlendSek);
+            WegeKern.Mischen(z, Zeit, BlendSek, Physik.Dynamik.Value);
+            if (z.Blendet && !lief) dBlenden++;
+        }
+
+        /// <summary>Was jetzt gilt (Ueberblendung fortgeschrieben). false = kein Ergebnis.</summary>
+        static bool Jetzt(WegZustand z, out double[] db, out double w)
+        {
+            db = z.Ergebnis; w = z.Wertung;
+            if (!z.Gueltig) return false;
+            if (Summe && z.DBl.Hat)
+            {
+                WegeKern.Mischen(z, Zeit, BlendSek, Physik.Dynamik.Value);
+                db = z.Jetzt; w = z.WertungJetzt;
+            }
+            return true;
         }
 
         static string RMaterialien(int n)
@@ -477,8 +520,8 @@ namespace Materialklang
         internal static bool Wertung(SpatialAudioOcclusionCombinedCalculator c, out float w)
         {
             w = 0f;
-            if (!An || !Tab.TryGetValue(c, out var inf) || !inf.Z.Gueltig) return false;
-            w = (float)inf.Z.Wertung;
+            if (!An || !Tab.TryGetValue(c, out var inf) || !Jetzt(inf.Z, out _, out double wj)) return false;
+            w = (float)wj;
             return true;
         }
 
@@ -489,21 +532,29 @@ namespace Materialklang
         internal static bool Tiefpass(SpatialAudioOccluder occ, out float lp)
         {
             lp = 22000f;
+            if (!BandKurve(occ, out double m1, out double m2)) return false;
+            lp = FitLp(m1, m2);
+            BandFilter++;
+            return true;
+        }
+
+        /// <summary>0.8.5: reale Mehrdaemmung 1 kHz / 4 kHz gegenueber dem Bezugsband (dB) des Hindernis-Wegs, ohne Zaehler
+        /// (auch fuer die Hoerbarkeit je Band in Physik.LautstaerkeNach und das Klang-Log). false = keine Bandkurve.</summary>
+        internal static bool BandKurve(SpatialAudioOccluder occ, out double m1, out double m2)
+        {
+            m1 = m2 = 0;
             if (!Baender || occ == null || occ.IsPropagationActive) return false;
-            double m1, m2;
             if (occ is CombinedSpatialAudioOccluder comb && comb._obstructionCalculator is SpatialAudioOcclusionCombinedCalculator c)
             {
-                if (An && Tab.TryGetValue(c, out var inf) && inf.Z.Gueltig)
+                if (An && Tab.TryGetValue(c, out var inf) && Jetzt(inf.Z, out var jd, out _))
                 {
-                    m1 = inf.Z.Ergebnis[0] - inf.Z.Ergebnis[1]; m2 = inf.Z.Ergebnis[0] - inf.Z.Ergebnis[2];
+                    m1 = jd[0] - jd[1]; m2 = jd[0] - jd[2];
                 }
                 else if (TFinde(c._transmissionCalculator, out var tb) && TBestimmt(c)) { m1 = tb.Db[1] - tb.Db[0]; m2 = tb.Db[2] - tb.Db[0]; }
                 else return false;
             }
             else if (occ is MultiSourceSpatialAudioOccluder && TFinde(Kontext.MultiCalc, out var tm)) { m1 = tm.Db[1] - tm.Db[0]; m2 = tm.Db[2] - tm.Db[0]; }
             else return false;
-            lp = FitLp(m1, m2);
-            BandFilter++;
             return true;
         }
 
@@ -553,6 +604,12 @@ namespace Materialklang
             else if (c._ranReflection) sb.Append(" R none");
             sb.Append(Summe ? " => sum " : " => loudest ");
             B(sb, z.Ergebnis);
+            if (Summe && Jetzt(z, out var jl, out _) && z.Blendet)
+            {
+                sb.Append(" (blending D ").Append((z.DBl.Anteil(Zeit, BlendSek) * 100).ToString("F0", Inv)).Append(" % / R ")
+                  .Append((z.RBl.Anteil(Zeit, BlendSek) * 100).ToString("F0", Inv)).Append(" %, now ");
+                B(sb, jl); sb.Append(')');
+            }
             sb.Append(" (d ").Append(z.Direkt.ToString("F1", Inv)).Append(" m)");
             return sb.ToString();
         }
@@ -600,11 +657,12 @@ namespace Materialklang
                     kosten = $" Rays/casts in 30 s: transmission {dTStrahlen}, diffraction {dDStrahlen}, reflection {dRBefehle} ({dRLauf} runs); " +
                              $"{dRExtra} reflection runs only because of 'Reflections for every occluded sound' = {dRBefehleExtra} casts (+{100.0 * dRBefehleExtra / Math.Max(1, alle - dRBefehleExtra):F0} % of the other audio casts).";
                 Plugin.Log.LogInfo($"[Diagnostics] Sound paths: {dSchnapp} finished path calculations ({dFrei} clear), loudest path T {dBestT} / D {dBestD} / R {dBestR}; " +
-                                   $"held D {dDGehalten}, held R {dRGehalten}, R kept (< 1 dB change) {dRHyst}; " +
+                                   $"held D {dDGehalten}, held R {dRGehalten}, R kept (< 1 dB change) {dRHyst}, D/R changes blended over {BlendSek * 1000:F0} ms {dBlenden}; " +
                                    (dSumN > 0 ? $"mean insulation loudest path {dSumMin / dSumN:F1} dB -> {(Summe ? "energy sum" : "result")} {dSumSumme / dSumN:F1} dB ({verdeckt} occluded)." : ".") + kosten);
             }
             if (BandFilter + BandFilterRaumweg + SummeRaumweg > 0)
                 Plugin.Log.LogInfo($"[Diagnostics] Sound paths: {BandFilter} low-pass values fitted to the band curve (obstruction), {BandFilterRaumweg} on room paths, {SummeRaumweg} room routes summed with the wall between rooms.");
+            dBlenden = 0;
             dSchnapp = dFrei = dBestT = dBestD = dBestR = dDGehalten = dRGehalten = dRHyst = dRLauf = dRExtra = dTStrahlen = dDStrahlen = dRBefehle = dRBefehleExtra = 0;
             dSumMin = dSumSumme = 0; dSumN = 0; BandFilter = BandFilterRaumweg = SummeRaumweg = 0;
         }

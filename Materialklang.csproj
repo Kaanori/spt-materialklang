@@ -11,7 +11,7 @@
     <TargetFramework>net471</TargetFramework>
     <AssemblyName>Materialklang</AssemblyName>
     <RootNamespace>Materialklang</RootNamespace>
-    <Version>0.8.4-beta</Version>
+    <Version>0.8.5-beta</Version>
     <LangVersion>latest</LangVersion>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>

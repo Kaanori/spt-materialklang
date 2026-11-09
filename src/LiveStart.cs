@@ -56,13 +56,37 @@ namespace Materialklang
             auffrischenAb = Time.realtimeSinceStartup + 0.3f;
         }
 
+        /// <summary>Ist gerade ein Texteingabefeld aktiv (Chat, Suche, Benennen)? Dann zaehlt die Marker-Taste nicht -
+        /// sonst setzt z. B. "?" (Umschalt+ß = KeyCode.Minus auf deutscher Tastatur) beim Tippen ungewollt Marken.
+        /// Typpruefung ueber den Namen, damit kein Verweis auf TextMeshPro/UnityEngine.UI noetig ist.</summary>
+        static Type esTyp;
+        static bool TipptGerade()
+        {
+            try
+            {
+                if (esTyp == null) esTyp = Type.GetType("UnityEngine.EventSystems.EventSystem, UnityEngine.UI");
+                if (esTyp == null) return false;
+                var es = esTyp.GetProperty("current")?.GetValue(null);
+                var go = es != null ? esTyp.GetProperty("currentSelectedGameObject")?.GetValue(es) as GameObject : null;
+                if (go == null) return false;
+                foreach (var c in go.GetComponents<Component>())
+                {
+                    if (c == null) continue;
+                    var n = c.GetType().Name;
+                    if (n.IndexOf("InputField", StringComparison.Ordinal) >= 0) return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
         // Jeden Frame aus Plugin.Update
         internal static void Tick()
         {
             float t = Time.realtimeSinceStartup;
             try
             {
-                if (KlangLog.MarkTaste != null && KlangLog.MarkTaste.Value.IsDown()) KlangLog.Markieren();
+                if (KlangLog.MarkTaste != null && KlangLog.MarkTaste.Value.IsDown() && !TipptGerade()) KlangLog.Markieren();
                 if (auffrischenAb >= 0f && t >= auffrischenAb) { auffrischenAb = -1f; Auffrischen(); }
                 if (t < naechsterLauf) return;
                 naechsterLauf = t + 1f;

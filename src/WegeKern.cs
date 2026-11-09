@@ -34,6 +34,37 @@ namespace Materialklang
         public void Vergessen() { Hat = false; Direkt = false; Fehl = 0; }
     }
 
+    /// <summary>0.8.5: zeitliche Ueberblendung eines Wegs (D oder R) in Energie je Band: von dem, was gerade zu hoeren ist,
+    /// linear in 'dauer' Sekunden zum neuen Ziel. Gleiches Prinzip wie der Raumweg (RoutenMischer): ein Weg, der dazukommt,
+    /// blendet ein, einer, der verschwindet, blendet mit seinem letzten Wert aus; springt er (Haltestufe, Hysterese, neue Kante),
+    /// blendet der alte Stand aus und der neue ein (in Energie dasselbe wie die lineare Ueberblendung).</summary>
+    internal sealed class WegBlende
+    {
+        public bool Hat;
+        public double T0;
+        public readonly double[] Alt = new double[WegeKern.N], Ziel = new double[WegeKern.N];
+        public double Anteil(double jetzt, double dauer) => !Hat || dauer <= 0 ? 1.0 : Math.Max(0.0, Math.Min(1.0, (jetzt - T0) / dauer));
+        public void Wert(double jetzt, double dauer, double[] aus)
+        {
+            double k = Anteil(jetzt, dauer);
+            for (int b = 0; b < WegeKern.N; b++) aus[b] = Alt[b] + (Ziel[b] - Alt[b]) * k;
+        }
+        public void Setzen(double[] ziel, double jetzt, double dauer)
+        {
+            if (Hat && dauer > 0) Wert(jetzt, dauer, Alt);
+            else Array.Copy(ziel, Alt, WegeKern.N);
+            Array.Copy(ziel, Ziel, WegeKern.N);
+            T0 = jetzt; Hat = true;
+        }
+        public bool Laeuft(double jetzt, double dauer)
+        {
+            if (!Hat || Anteil(jetzt, dauer) >= 1.0) return false;
+            for (int b = 0; b < WegeKern.N; b++) if (Math.Abs(Ziel[b] - Alt[b]) > 1e-9) return true;
+            return false;
+        }
+        public void Vergessen() { Hat = false; }
+    }
+
     /// <summary>Ergebnis einer fertigen Rechnung (je Rechner des Spiels), Wege einzeln und als Summe.</summary>
     internal sealed class WegZustand
     {
@@ -51,11 +82,16 @@ namespace Materialklang
         public int RAnzahl;             // Reflexionen des R-Wegs (Log)
         public readonly WegSpeicher DSp = new WegSpeicher(), RSp = new WegSpeicher();
         public int Rechnungen;
+        // 0.8.5: zeitliche Ueberblendung von D und R (WegBlende); Jetzt = was gerade gilt (Ergebnis = Ziel der Rechnung)
+        public readonly WegBlende DBl = new WegBlende(), RBl = new WegBlende();
+        public readonly double[] Jetzt = new double[WegeKern.N];
+        public double WertungJetzt;
+        public bool Blendet;
 
         public void Vergessen()
         {
             Gueltig = Frei = HatT = HatD = HatR = DGehalten = RGehalten = DDirekt = RDirekt = RHysterese = false;
-            Bester = 0; Wertung = 0; DSp.Vergessen(); RSp.Vergessen();
+            Bester = 0; Wertung = 0; DSp.Vergessen(); RSp.Vergessen(); DBl.Vergessen(); RBl.Vergessen(); Blendet = false; WertungJetzt = 0;
         }
     }
 
@@ -215,6 +251,45 @@ namespace Materialklang
                 for (int b = 0; b < N; b++) z.Ergebnis[b] = src != null ? Math.Max(-maxDb, Math.Min(0, src[b])) : -maxDb;
             }
             z.Wertung = Math.Max(0, Math.Min(1, -z.Ergebnis[0] / maxDb));
+        }
+
+        static readonly double[] eD = new double[N], eR = new double[N], wD = new double[N], wR = new double[N];
+
+        /// <summary>0.8.5: Nach Auswerten (nur mit Energiesumme): Ziele der D/R-Ueberblendung setzen. "frei" gilt sofort
+        /// (der Uebergang an der Freiweg-Schwelle ist schon stetig, siehe Auswerten).</summary>
+        public static void BlendeSetzen(WegZustand z, double jetzt, double dauer)
+        {
+            if (z.Frei || !z.Gueltig) { z.DBl.Vergessen(); z.RBl.Vergessen(); return; }
+            for (int b = 0; b < N; b++)
+            {
+                eD[b] = z.HatD ? (z.DDirekt ? 1.0 : Energie(z.D[b])) : 0.0;
+                eR[b] = z.HatR && !z.RDirekt ? Energie(z.R[b]) : 0.0;
+            }
+            z.DBl.Setzen(eD, jetzt, dauer);
+            z.RBl.Setzen(eR, jetzt, dauer);
+        }
+
+        /// <summary>0.8.5: was zur Zeit 'jetzt' gilt (z.Jetzt, z.WertungJetzt): T sofort, D und R uebergeblendet, sonst wie
+        /// SummeGetrennt. Am Ende der Ueberblendung genau z.Ergebnis.</summary>
+        public static void Mischen(WegZustand z, double jetzt, double dauer, double maxDb)
+        {
+            if (z.Frei || !z.DBl.Hat)
+            {
+                Array.Copy(z.Ergebnis, z.Jetzt, N); z.WertungJetzt = z.Wertung; z.Blendet = false;
+                return;
+            }
+            z.DBl.Wert(jetzt, dauer, wD); z.RBl.Wert(jetzt, dauer, wR);
+            for (int b = 0; b < N; b++)
+            {
+                double g = z.HatT ? z.TFrei : 0;
+                g = Math.Max(g, wD[b]);
+                double e = g + wR[b];
+                if (z.HatT) e += Energie(z.TWand[b]);
+                if (z.HatR && z.RDirekt && !z.HatT) e = Math.Max(e, 1.0);
+                z.Jetzt[b] = Math.Min(0.0, DbAus(e, -maxDb));
+            }
+            z.WertungJetzt = Math.Max(0, Math.Min(1, -z.Jetzt[0] / maxDb));
+            z.Blendet = z.DBl.Laeuft(jetzt, dauer) || z.RBl.Laeuft(jetzt, dauer);
         }
 
         static bool Weg(WegSpeicher sp, double[] ziel, bool ran, bool direkt, bool hat, double[] neu, V3 q, V3 h, double maxDb,

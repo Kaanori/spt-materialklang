@@ -298,6 +298,22 @@ namespace Materialklang
             e.Physik = Physik.An;
             e.RohDb = Physik.Dynamik.Value * e.Wirkung;
             e.Lautheit = Physik.Lautheit.Value;
+            // 0.8.5: Hoerbarkeit je Band (ersetzt das breitbandige Knie im Log; neu gerechnet fuer genau diese Quelle, zaehlt nicht
+            // in der Diagnose) und Quellposition/Hoehenunterschied
+            e.HoerBand = false;
+            if (Physik.Hoeren(occ, source, source.Position, e.Wirkung, out _))
+            {
+                var hb = Physik.HoerErg;
+                e.HoerBand = true;
+                for (int b = 0; b < Hoerbarkeit.NB; b++) { e.HoerUeber[b] = (float)hb.Ueber[b]; e.HoerD[b] = (float)hb.D[b]; }
+                e.HoerDb = (float)hb.Lautstaerke;
+            }
+            {
+                var qp = source.Position;
+                e.QX = qp.x; e.QY = qp.y; e.QZ = qp.z;
+                var lt = occ.ListenerTransform;
+                e.Dy = lt != null ? qp.y - lt.position.y : float.NaN;
+            }
             e.FarbeH = FarbeH; e.FarbeL = FarbeL; e.LuftHz = LuftHz;
             e.WaldM = WaldM; e.WaldDb = WaldDb; e.WaldHz = WaldHz;
 

@@ -17,7 +17,8 @@ namespace Materialklang
     //    0.8.4 Stufe 1 (Wege.cs, Abschnitt 14): D und R in echten dB, Energiesumme statt Minimum, Tiefpass aus der Bandkurve.
     internal static class Physik
     {
-        internal static ConfigEntry<bool> Aktiv, Koinzidenz;
+        internal static ConfigEntry<bool> Aktiv, Koinzidenz, LeiseReal;
+        internal static ConfigEntry<float> Grundgeraeusch;
         internal static ConfigEntry<float> Dynamik, Frequenz, TiefpassMin, Freiweg, Lautheit, VerlustFaktor;
         internal static readonly ConfigEntry<float>[] Dichte = new ConfigEntry<float>[Plugin.AnzahlGruppen];
         internal static readonly ConfigEntry<float>[] Massiv = new ConfigEntry<float>[Plugin.AnzahlGruppen];
@@ -68,6 +69,13 @@ namespace Materialklang
                 Massiv[i] = c.Bind(s, $"Solid up to {i + 1:00} {namen[i]} (m)", StartMassiv[i],
                     new ConfigDescription("Measured thicker than this = hollow object: counts as two walls of this thickness.", new AcceptableValueRange<float>(0f, 5f)));
             }
+            // 0.8.5: leise Quellen nur so weit stauchen, wie sie real ueber dem Grundgeraeusch liegen (RaumwegKern.cs, Hoerbarkeit)
+            LeiseReal = c.Bind(s, "Quiet sources: real audibility", true,
+                "The loudness factor compresses insulation so loud sounds (gunshots ~150 dB) stay audible through walls. Quiet sounds (footsteps, gear, breathing, voices: 60-72 dB at 1 m) " +
+                "are only compressed as far as they would really stay above the background noise; insulation beyond that counts fully and 10 dB below the background they are gone, like in real life. " +
+                "Checked per band (250 Hz / 1 kHz / 4 kHz): walls let the lows through best, so a sound whose highs are masked stays audible as a dull thud; silent only when no band is left. Gunshots, explosions and impacts are unchanged. Off = every sound compressed alike (0.8.4).");
+            Grundgeraeusch = c.Bind(s, "Quiet sources: background noise (dB)", 30f,
+                new ConfigDescription("Background noise level (dB(A)) the quiet sources have to be heard over (they fade out completely 10 dB below it). Spread over the bands like a quiet room (NR curve: louder in the lows, quieter in the highs). 30 = quiet room. Higher = quiet sounds disappear sooner behind walls.", new AcceptableValueRange<float>(0f, 60f)));
             Raumweg.Binden(c);   // 0.8.4: Raumweg aus Geometrie und Portalzustand
         }
 
@@ -144,9 +152,18 @@ namespace Materialklang
         internal static double SummeDb;
 
         // Lautstaerke direkt aus der Wertung (gilt fuer jede Quelle mit Verdeckung).
-        static void LautstaerkeNach(SpatialAudioOccluder __instance)
+        internal static int LeiseGestaucht; internal static double LeiseSummeDb;
+
+        static void LautstaerkeNach(SpatialAudioOccluder __instance, BetterSource source, Vector3 sourcePos)
         {
             if (!An) return;
+            long t0 = Laufzeit.Jetzt;     // 0.8.5: Zeitmessung (Diagnosezeile der Raumwege)
+            try { LautstaerkeKern(__instance, source, sourcePos); }
+            finally { Raumweg.ZeitLaut.Dazu(t0, Time.frameCount); }
+        }
+
+        static void LautstaerkeKern(SpatialAudioOccluder __instance, BetterSource source, Vector3 sourcePos)
+        {
             try
             {
                 // 0.8.4: physikalischer Raumweg -> Faktor draussen/drinnen der Klanggruppe entfaellt (Raumweg.cs)
@@ -154,6 +171,15 @@ namespace Materialklang
                 float w = __instance.OcclusionEffect;
                 // dB -> Amplitudenfaktor 10^(-dB/20) (Schalldruck). Lautheit 0.2 = nach Gehoer, keine Physik.
                 float db = Dynamik.Value * w * Lautheit.Value;
+                // 0.8.5: Hoerbarkeit je Band (RaumwegKern.cs, Hoerbarkeit.Rechnen) - Lautstaerke = lautestes hoerbares Band
+                if (Hoeren(__instance, source, sourcePos, w, out _))
+                {
+                    float neu = (float)HoerErg.Lautstaerke;
+                    if (neu > db + 0.05f) { LeiseGestaucht++; LeiseSummeDb += neu - db; }
+                    if (HoerErg.Stumm) LeiseStumm++;
+                    else if (!HoerErg.Hoerbar(1) && !HoerErg.Hoerbar(2)) LeiseNurTief++;
+                    db = neu;
+                }
                 __instance.CurrentParameters.OcclusionVolumeFactor = Mathf.Pow(10f, -db / 20f);
                 Lautstaerken++; SummeDb += db;
             }
@@ -173,15 +199,26 @@ namespace Materialklang
             ref float lowPassFreq, ref float highPassFreq)
         {
             if (!An || occlusion <= 0.001f) return;
-            float lp = Abbildung(occlusion);
-            // 0.8.4 Stufe 1: Hindernis-Weg mit Bandkurve (T/D/R je Band, Wege.cs) -> 2-poliger Fit statt der freien Kurve
-            if (Wege.Tiefpass(Raumweg.AnwendOcc, out float lpBand)) lp = lpBand;
-            // 0.8.4 Stufe 1: Raumweg + Wand zwischen Raeumen energetisch summiert -> Fit aus beiden Spektren
-            else if (WandZwischenRaeumen.SummenTiefpass(Raumweg.AnwendOcc, out float lpSumme)) lp = lpSumme;
-            // 0.8.4: physikalischer Raumweg - Abbildung nur fuer den Tuer-/Fensteranteil, die Beugung an offenen Oeffnungen
-            // bringt ihren eigenen Tiefpass mit (Raumweg.cs / RaumwegKern.Tiefpass)
-            else if (Raumweg.Tiefpass(out float lpBeugung, out float wTuer))
-                lp = Mathf.Min(Abbildung(wTuer), lpBeugung);
+            long t0 = Laufzeit.Jetzt;     // 0.8.5: Zeitmessung (Diagnosezeile der Raumwege)
+            try { FilterKern(preset, occlusion, influencedWeights, ref lowPassFreq, ref highPassFreq); }
+            finally { Raumweg.ZeitFilter.Dazu(t0, Time.frameCount); }
+        }
+
+        static void FilterKern(Audio.Effects.AudioOcclusionEQPreset preset, float occlusion, DirectionalWeights influencedWeights,
+            ref float lowPassFreq, ref float highPassFreq)
+        {
+            var occ = Raumweg.AnwendOcc;
+            int quelle = Kurve(occ, occlusion, kM, kN, out float lp);
+            if (quelle == 1) Wege.BandFilter++; else if (quelle == 2) Wege.BandFilterRaumweg++;
+            // 0.8.5: Tiefpass an die hoerbaren Baender angepasst (nur Tiefen hoerbar -> dumpf); ohne Zusatz exakt lp
+            var src = Raumweg.AnwendQuelle;
+            if (src != null && Hoeren(occ, src, src.Position, occlusion, out _, lp))
+            {
+                var f = Wege.Frequenzen();
+                float lpH = (float)Hoerbarkeit.Tiefpass(HoerErg, lp, f[1], f[2], TiefpassMin.Value);
+                if (lpH < lp - 0.5f) { HoerTiefpass++; HoerTiefpassHz += lp - lpH; }
+                lp = lpH;
+            }
             lowPassFreq = lp;
             float offen = highPassFreq;
             try { if (preset != null) offen = HochpassOffen(preset, influencedWeights); }
@@ -190,6 +227,64 @@ namespace Materialklang
             if (hp < highPassFreq - 0.5f) { HochpassGesenkt++; HochpassSummeHz += highPassFreq - hp; }
             highPassFreq = hp;
             Filter++;
+        }
+
+        // ---------------------------------------------------------------- 0.8.5: Hoerbarkeit je Band
+
+        static readonly double[] kM = new double[Hoerbarkeit.NB], kN = new double[Hoerbarkeit.NB];
+        /// <summary>Letztes Ergebnis von Hoeren (Hauptthread; das Klang-Log liest es im selben Anwenden).</summary>
+        internal static readonly Hoerbarkeit.Baender HoerErg = new Hoerbarkeit.Baender();
+        internal static int LeiseStumm, LeiseNurTief, HoerTiefpass;
+        internal static double HoerTiefpassHz;
+
+        /// <summary>
+        /// Bandkurve des Wegs, die auch der Tiefpass benutzt: m = reale Mehrdaemmung 1 kHz / 4 kHz gegenueber dem Bezugsband,
+        /// n = Mehrdaempfung des Spiels ueber den Tiefpass (bei den Fit-Wegen BandStaerke * m, sonst aus dem fertigen Tiefpass
+        /// zurueckgerechnet, MehrDb(lp, f)). lp = Tiefpass wie 0.8.4. Rueckgabe: 1 Hindernis-Bandkurve, 2 Raumweg + Wand,
+        /// 3 Raumweg (Tuer/Beugung), 0 alte Abbildung.
+        /// </summary>
+        static int Kurve(SpatialAudioOccluder occ, float occlusion, double[] m, double[] n, out float lp)
+        {
+            m[0] = n[0] = 0;
+            int quelle;
+            double m1, m2;
+            // 0.8.4 Stufe 1: Hindernis-Weg mit Bandkurve (T/D/R je Band, Wege.cs) -> 2-poliger Fit statt der freien Kurve
+            if (Wege.BandKurve(occ, out m1, out m2)) quelle = 1;
+            // 0.8.4 Stufe 1: Raumweg + Wand zwischen Raeumen energetisch summiert -> Fit aus beiden Spektren
+            else if (WandZwischenRaeumen.SummenKurve(occ, out m1, out m2)) quelle = 2;
+            else quelle = 0;
+            var f = Wege.Frequenzen();
+            if (quelle != 0)
+            {
+                double k = Wege.BandStaerke.Value;
+                m[1] = m1; m[2] = m2; n[1] = k * m1; n[2] = k * m2;
+                lp = Wege.FitLp(m1, m2);
+                return quelle;
+            }
+            lp = Abbildung(occlusion);
+            // 0.8.4: physikalischer Raumweg - Abbildung nur fuer den Tuer-/Fensteranteil, die Beugung an offenen Oeffnungen
+            // bringt ihren eigenen Tiefpass mit (Raumweg.cs / RaumwegKern.Tiefpass)
+            if (Raumweg.Tiefpass(occ, out float lpBeugung, out float wTuer)) { lp = Mathf.Min(Abbildung(wTuer), lpBeugung); quelle = 3; }
+            for (int b = 1; b < Hoerbarkeit.NB; b++) m[b] = n[b] = WegeKern.MehrDb(lp, f[b]);
+            return quelle;
+        }
+
+        /// <summary>0.8.5: Hoerbarkeit je Band fuer Quelle 'source' (Ergebnis in HoerErg). false = aus, laute Gruppe, keine Daemmung.
+        /// lpFertig: Tiefpass ist schon gerechnet (FilterNach) - dann wird die Kurve nicht doppelt bestimmt.</summary>
+        internal static bool Hoeren(SpatialAudioOccluder occ, BetterSource source, Vector3 sourcePos, float w, out float lp, float lpFertig = -1f)
+        {
+            lp = 22000f;
+            HoerErg.Gilt = false;
+            if (!An || !LeiseReal.Value || source == null || occ == null || w <= 0f) return false;
+            var preset = source.Preset;
+            var lt = occ.ListenerTransform;
+            if (preset == null || lt == null) return false;
+            int typ = (int)preset.Type;
+            if (double.IsNaN(Hoerbarkeit.BandPegel(typ, 0))) return false;
+            if (lpFertig < 0f) Kurve(occ, w, kM, kN, out lp);
+            else lp = lpFertig;   // FilterNach hat kM/kN direkt davor fuer diesen Occluder gefuellt
+            return Hoerbarkeit.Rechnen(typ, Vector3.Distance(sourcePos, lt.position), Grundgeraeusch.Value, Dynamik.Value * w,
+                                       kM, kN, Lautheit.Value, Dynamik.Value, HoerErg);
         }
 
         /// <summary>Alte Abbildung Wertung -> Tiefpass (logarithmisch 22 kHz -> "Low-pass at full insulation").</summary>
@@ -307,6 +402,11 @@ namespace Materialklang
             if (!An || Lautstaerken == 0) return;
             Plugin.Log.LogInfo($"[Diagnostics] Physics mode: {Lautstaerken} volume updates (mean -{SummeDb / Lautstaerken:F1} dB), {Filter} low-pass updates, " +
                                $"{HochpassGesenkt} high-pass values lowered to the open-path value (mean -{(HochpassGesenkt > 0 ? HochpassSummeHz / HochpassGesenkt : 0):F0} Hz).");
+            if (LeiseGestaucht > 0)
+                Plugin.Log.LogInfo($"[Diagnostics] Physics mode: {LeiseGestaucht} volume updates of quiet sources below the background noise (mean {LeiseSummeDb / LeiseGestaucht:F1} dB more insulation than the loudness factor alone).");
+            if (LeiseStumm + LeiseNurTief + HoerTiefpass > 0)
+                Plugin.Log.LogInfo($"[Diagnostics] Physics mode: audibility per band - {LeiseStumm} volume updates of quiet sources silent (no band above its masking threshold), {LeiseNurTief} with only the low band audible, {HoerTiefpass} low-pass values lowered to the audible bands (mean -{(HoerTiefpass > 0 ? HoerTiefpassHz / HoerTiefpass : 0):F0} Hz).");
+            LeiseGestaucht = 0; LeiseSummeDb = 0; LeiseStumm = LeiseNurTief = HoerTiefpass = 0; HoerTiefpassHz = 0;
             Lautstaerken = Filter = HochpassGesenkt = 0; SummeDb = 0; HochpassSummeHz = 0;
         }
     }

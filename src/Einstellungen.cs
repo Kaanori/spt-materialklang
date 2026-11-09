@@ -46,6 +46,12 @@ namespace Materialklang
             Wald.Binden(c);
             Fernschuss.Binden(c);   // 0.8.4, Abschnitt 13
             Wege.Binden(c);         // 0.8.4 Stufe 1, Abschnitt 14
+            Umgebung.Binden(c);     // 0.8.5, Abschnitt 15 (nach Physik: haengt an Physik.Aktiv)
+            Raumton.Binden(c);      // 0.8.5, Abschnitt 15: Indoor room tone volume (%)
+            LautSignal.Binden(c);   // 0.8.5, Abschnitt 16 (nach Physik)
+            FesteQuellen.Binden(c); // 0.8.5, Abschnitt 17 (nach 15/16)
+            SkriptQuellen.Binden(c); // 0.8.5, Abschnitt 18 (nach 17: Ausgangsfackeln laufen ueber den Weg "raw scene" von 17)
+            WandDaempfung.Binden(c); // 0.8.5, Abschnitt 17: Wall damping for non-occluded sources (Quellen aus 15/17/18)
 
             // Einmalig: Werte aus den alten deutschen Namen uebernehmen.
             Migriert = Einstellungsumzug.Uebernehmen(c, vorher);

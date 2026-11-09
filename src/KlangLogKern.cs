@@ -285,6 +285,11 @@ namespace Materialklang
         public bool Propagation, Physik;
         public float WertT = float.NaN, WertD = float.NaN, WertR = float.NaN, WertRoute = float.NaN, WertWand = float.NaN;
         public float Wirkung, Lautstaerke, Tiefpass, Hochpass, RohDb, Lautheit;
+        public float Knie = float.NaN;                                     // 0.8.5: Hoerbarkeit leiser Quellen (dB), NaN = keins
+        public bool HoerBand;                                              // 0.8.5: Hoerbarkeit je Band gerechnet
+        public readonly float[] HoerUeber = new float[3], HoerD = new float[3];   // dB ueber der Mithoerschwelle / reale Daemmung je Band
+        public float HoerDb;                                               // angewandte Daempfung (lautestes Band)
+        public float QX = float.NaN, QY = float.NaN, QZ = float.NaN, Dy = float.NaN;   // 0.8.5: Quellposition, Hoehe Quelle - Hoerer
         public float FarbeH = float.NaN, FarbeL = float.NaN, LuftHz = float.NaN;
         public float WaldM = float.NaN, WaldDb = float.NaN, WaldHz = float.NaN;
         public int Strahlen, FreieStrahlen;
@@ -320,6 +325,7 @@ namespace Materialklang
             FarbeH = FarbeL = LuftHz = WaldM = WaldDb = WaldHz = SebWaldM = SebWaldHz = SebFernDb = float.NaN; SebGedaempft = SebFernMitte = false;
             Strahlen = FreieStrahlen = 0; StueckAnzahl = WandAnzahl = 0;
             HatSeb = false; HallQuelle = HallHoerer = null; RaumwegText = null; WegeText = null;
+            Knie = QX = QY = QZ = Dy = float.NaN; HoerBand = false;
         }
     }
 
@@ -355,6 +361,23 @@ namespace Materialklang
             return sb.Append(v.ToString(fmt, Inv));
         }
 
+        /// <summary>0.8.5: " | audible 250/1k/4k: yes +12.3 (D 21.0) / yes +4.1 (D 33.0) / no -6.0 (D 45.0) -> -10.5 dB" -
+        /// je Band hoerbar ja/nein, Pegel ueber (+) bzw. unter (-) der Mithoerschwelle und reale Daemmung; "silent" = kein Band.</summary>
+        public static void HoerText(StringBuilder sb, LogEintrag e)
+        {
+            sb.Append(" | audible 250/1k/4k:");
+            bool eins = false;
+            for (int b = 0; b < 3; b++)
+            {
+                float u = e.HoerUeber[b];
+                eins |= u > 0f;
+                sb.Append(b == 0 ? " " : " / ").Append(u > 0f ? (u < 10f ? "fading " : "yes ") : "no ");
+                if (u > 0f) sb.Append('+');
+                F(sb, u, "F1").Append(" (D "); F(sb, e.HoerD[b], "F1").Append(')');
+            }
+            sb.Append(eins ? " -> -" : " -> silent -"); F(sb, e.HoerDb, "F1").Append(" dB");
+        }
+
         public static string Uhrzeit(long ticks)
         {
             var d = new DateTime(ticks);
@@ -387,6 +410,8 @@ namespace Materialklang
             sb.Append(" src=").Append(e.Quelle ?? "-");
             sb.Append(" owner=").Append(e.Besitzer ?? "-");
             sb.Append(" | d="); F(sb, e.Entf, "F1").Append(" m");
+            if (!float.IsNaN(e.QX)) { sb.Append(" at ("); F(sb, e.QX, "F1").Append(", "); F(sb, e.QY, "F1").Append(", "); F(sb, e.QZ, "F1").Append(')'); }
+            if (!float.IsNaN(e.Dy)) { sb.Append(" dy="); F(sb, e.Dy, "+0.0;-0.0").Append(" m"); }
             sb.Append(" | path=").Append(WegName[Math.Max(0, Math.Min(WegName.Length - 1, e.Weg))]);
             sb.Append(" [T="); F(sb, e.WertT, "F2"); sb.Append(" D="); F(sb, e.WertD, "F2"); sb.Append(" R="); F(sb, e.WertR, "F2");
             if (e.Propagation) { sb.Append(" route="); F(sb, e.WertRoute, "F2"); sb.Append(" wall="); F(sb, e.WertWand, "F2"); }
@@ -409,7 +434,13 @@ namespace Materialklang
             sb.Append(" | vol=").Append(e.Lautstaerke.ToString("F3", Inv)).Append(" (-").Append(lautDb.ToString("F1", Inv)).Append(" dB)");
             sb.Append(" lp="); F(sb, e.Tiefpass, "F0").Append(" Hz hp="); F(sb, e.Hochpass, "F0").Append(" Hz");
             sb.Append(" | mode=").Append(e.Physik ? "physics" : "sliders");
-            if (e.Physik) { sb.Append(" (insulation "); F(sb, e.RohDb, "F1").Append(" dB x loudness "); F(sb, e.Lautheit, "F2").Append(')'); }
+            if (e.Physik)
+            {
+                sb.Append(" (insulation "); F(sb, e.RohDb, "F1").Append(" dB x loudness "); F(sb, e.Lautheit, "F2");
+                if (!float.IsNaN(e.Knie)) { sb.Append(" up to "); F(sb, e.Knie, "F1").Append(" dB above background, beyond 1:1, gone 10 dB below"); }
+                sb.Append(')');
+                if (e.HoerBand) HoerText(sb, e);
+            }
             if (!float.IsNaN(e.FarbeH)) { sb.Append(" timbre dH="); F(sb, e.FarbeH, "F1"); sb.Append(" dL="); F(sb, e.FarbeL, "F1"); sb.Append(" dB"); }
             if (!float.IsNaN(e.LuftHz)) { sb.Append(" air="); F(sb, e.LuftHz, "F0").Append(" Hz"); }
             if (!float.IsNaN(e.WaldM)) { sb.Append(" forest="); F(sb, e.WaldM, "F0"); sb.Append(" m "); F(sb, e.WaldDb, "F1"); sb.Append(" dB lp="); F(sb, e.WaldHz / 1000f, "F1").Append(" kHz"); }

@@ -516,6 +516,17 @@ namespace Materialklang
         internal static bool SummenTiefpass(SpatialAudioOccluder occ, out float lp)
         {
             lp = 22000f;
+            if (!SummenKurve(occ, out double m1, out double m2)) return false;
+            lp = Wege.FitLp(m1, m2);
+            Wege.BandFilterRaumweg++;
+            return true;
+        }
+
+        /// <summary>0.8.5: Mehrdaemmung 1 kHz / 4 kHz gegenueber dem Bezugsband (dB) von Raumweg + Wand, energetisch je Band summiert,
+        /// ohne Zaehler (auch fuer die Hoerbarkeit je Band). false = keine Summe.</summary>
+        internal static bool SummenKurve(SpatialAudioOccluder occ, out double m1, out double m2)
+        {
+            m1 = m2 = 0;
             try
             {
                 if (!Wege.Summe || !Wege.Baender || occ == null || !occ.IsPropagationActive) return false;
@@ -533,8 +544,7 @@ namespace Materialklang
                     double l = WegeKern.DbAus(er + ew, -dyn);
                     if (b == 0) l0 = l; else if (b == 1) l1 = l; else l2 = l;
                 }
-                lp = Wege.FitLp(l0 - l1, l0 - l2);
-                Wege.BandFilterRaumweg++;
+                m1 = l0 - l1; m2 = l0 - l2;
                 return true;
             }
             catch (Exception e) { Statistik.Fehler(e); return false; }

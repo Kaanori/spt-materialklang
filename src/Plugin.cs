@@ -29,7 +29,7 @@ namespace Materialklang
     [BepInDependency("red.soundenginebackport", BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
-        public const string Version = "0.8.4";
+        public const string Version = "0.8.5";
         internal static ManualLogSource Log;
         internal static Plugin Instanz;   // 0.8.4: fuer Coroutinen (Kartenexport)
         internal static ConfigEntry<bool> Aktiv;
@@ -72,7 +72,8 @@ namespace Materialklang
             SceneManager.activeSceneChanged += (_, __) =>
             {
                 MaterialCache.Leeren(); BotHoeren.Leeren(); HallZonen.SzeneGewechselt();
-                TuerenFenster.Leeren(); WandZwischenRaeumen.Leeren(); KlangLog.SzeneGewechselt(); Fernschuss.SzeneGewechselt();
+                TuerenFenster.Leeren(); WandZwischenRaeumen.Leeren(); KlangLog.SzeneGewechselt(); Fernschuss.SzeneGewechselt(); Umgebung.SzeneGewechselt(); LautSignal.SzeneGewechselt();
+                WandDaempfung.SzeneGewechselt();
             };
             var h = new Harmony("kaan.materialklang");
             h.PatchAll(typeof(Plugin).Assembly);
@@ -81,6 +82,11 @@ namespace Materialklang
             WandZwischenRaeumen.Anwenden(h);
             SebAkustik.Anwenden(h);
             Fernschuss.Anwenden(h);   // 0.8.4: 13. Distance (SEB)
+            Umgebung.Anwenden(h);     // 0.8.5: 15. Ambient emitters
+            Raumton.Anwenden(h);      // 0.8.5: 15. Ambient emitters / Indoor room tone volume (%)
+            LautSignal.Anwenden(h);   // 0.8.5: 16. Loud signals
+            FesteQuellen.Anwenden(h); // 0.8.5: 17. All fixed sources (rohe Szenenquellen, Takt ferner Quellen)
+            SkriptQuellen.Anwenden(h); // 0.8.5: 18. Scripted sources (Lok, Airdrop, BTR-Turm/-Horn, Fackeln, Moerser-Pfeifen, Tueren/Tore)
             Physik.Anwenden(h);       // ruft auch Wege.Anwenden (0.8.4 Stufe 1, Abschnitt 14)
             FilterGleiten.Anwenden(h);
             MultiQuelle.Anwenden(h);
@@ -90,10 +96,10 @@ namespace Materialklang
             Log.LogInfo($"Materialklang {Version} (beta) loaded.");
         }
 
-        void Update() { Wege.Tick(); HallZonen.Tick(); KartenExport.Tick(); Statistik.VielleichtLoggen(); LiveStart.Tick(); Wetter.Tick(); Wald.Tick(); }
+        void Update() { Wege.Tick(); HallZonen.Tick(); KartenExport.Tick(); Statistik.VielleichtLoggen(); LiveStart.Tick(); Wetter.Tick(); Wald.Tick(); Umgebung.Tick(); LautSignal.Tick(); FesteQuellen.Tick(); SkriptQuellen.Tick(); WandDaempfung.Tick(); }
 
-        void OnApplicationQuit() { KlangLog.Beenden(); }
-        void OnDestroy() { KlangLog.Beenden(); }
+        void OnApplicationQuit() { KlangLog.Beenden(); WandDaempfung.Beenden(); }
+        void OnDestroy() { KlangLog.Beenden(); WandDaempfung.Beenden(); }
     }
 
     internal static class MaterialCache
@@ -400,6 +406,7 @@ namespace Materialklang
             QuellWirkung.Loggen();
             TuerenFenster.DiagnoseLoggen();
             WandZwischenRaeumen.DiagnoseLoggen();
+            WandDaempfung.Loggen();
             if (rechnungen == 0) return;
             var tr = string.Join(", ", Enumerable.Range(0, Plugin.AnzahlGruppen).Where(i => treffer[i] > 0)
                 .Select(i => $"{(Gruppe)i}={treffer[i]}"));

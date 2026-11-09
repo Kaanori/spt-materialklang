@@ -8,6 +8,7 @@ using BepInEx.Configuration;
 using Comfort.Common;
 using EFT;
 using EFT.Interactive;
+using Unity.Collections;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -23,11 +24,18 @@ namespace Materialklang
     //   - Material ueber dieselbe Zuordnung wie die Strahlen (MaterialCache.Bestimmen), Dicke: Quader = kleinere Breite des
     //     Schnitts, Mesh-Flaeche = Gruppendicke (Bauakustik.EinzelDicke) bzw. Abstand eines Flaechenpaares.
     //  Verteilt ueber mehrere Bilder (Coroutine, ~6 ms je Bild), Fortschritt im Log.
+    //  0.8.5 - Standard ist jetzt der Scan ("Export method" = Scan): auf Customs waren 5247 von 5266 MeshCollidern nicht lesbar
+    //  (isReadable = false) und kamen nur als Bounds-Rechteck heraus. Die PhysX-Kollisionsform ist aber immer abfragbar: waagerechte
+    //  Strahlen entlang Gitterlinien in x- und z-Richtung (RaycastCommand, auf den Arbeitsfaeden, im selben Bild fertig), vorwaerts
+    //  = Eintritte, rueckwaerts = Austritte, schrittweise von Treffer zu Treffer; Rechnung (Raster, Umriss, Mittellinien, JSON) in
+    //  KartenScan (KartenSchnitt.cs) im Hintergrundfaden. Der alte Schnitt bleibt als "Mesh".
     // ------------------------------------------------------------------------------------------
     internal static class KartenExport
     {
+        internal enum Methode { Scan, Mesh }
         internal static ConfigEntry<bool> Ausloeser, AbFuessen;
-        internal static ConfigEntry<float> Hoehe, Radius;
+        internal static ConfigEntry<float> Hoehe, Radius, ScanRadius, ScanRaster;
+        internal static ConfigEntry<Methode> Art;
 
         static bool angefordert, laeuft;
         const double BudgetMs = 6.0;
@@ -38,11 +46,18 @@ namespace Materialklang
         {
             string s = KlangLog.Sek;
             Ausloeser = c.Bind(s, "Export map for sandbox", false,
-                "Tick during a raid: exports a horizontal cut through the level's collision geometry (walls, doors, windows) at ear height to BepInEx/Materialklang-Logs/sandbox-<map>-<height>.json, for the 'Load map' button of the demo page. Takes a few seconds (spread over frames, progress in the BepInEx log), confirmed with a sound. Resets itself.");
+                "Tick during a raid: exports a horizontal cut through the level's collision geometry (walls, doors, windows) at ear height to BepInEx/Materialklang-Logs/sandbox-<map>-<height>.json, for the 'Load map' button of the demo page. Spread over frames (scan: roughly 10-60 s for 300 m, progress in the BepInEx log), confirmed with a sound. Resets itself.");
             Hoehe = c.Bind(s, "Export slice height above ground (m)", 1.6f,
                 new ConfigDescription("Height of the cut above the ground below you (1.6 = ear height).", new AcceptableValueRange<float>(0.2f, 10f)));
+            Art = c.Bind(s, "Export method", Methode.Scan,
+                "Scan = probe the collision shapes with physics rays on a grid (works for every collider; most of the game's mesh colliders cannot be read). " +
+                "Mesh = cut the collider data directly (exact, but unreadable meshes only come out as their bounds rectangle).");
+            ScanRadius = c.Bind(s, "Export scan radius (m)", 300f,
+                new ConfigDescription("Scan: square of +- this many metres around you. 0 = the map's bounds (limited to 3200 grid cells per side around you).", new AcceptableValueRange<float>(0f, 1000f)));
+            ScanRaster = c.Bind(s, "Export scan resolution (m)", 0.25f,
+                new ConfigDescription("Scan: grid spacing. Smaller = finer, but the time grows with 1/spacing^2 (0.25 m and 300 m: 2400 lines per direction).", new AcceptableValueRange<float>(0.05f, 2f)));
             Radius = c.Bind(s, "Export radius (m)", 0f,
-                new ConfigDescription("Only export a square of +- this many metres around you. 0 = whole map.", new AcceptableValueRange<float>(0f, 2000f)));
+                new ConfigDescription("Mesh method only: export a square of +- this many metres around you. 0 = whole map.", new AcceptableValueRange<float>(0f, 2000f)));
             AbFuessen = c.Bind(s, "Export slice from your feet", false,
                 "Off = the cut is at (ground below you + height). On = at (your feet + height), e.g. on a roof or a stair landing.");
             Ausloeser.SettingChanged += (_, __) =>
@@ -82,6 +97,11 @@ namespace Materialklang
             public int Terrain, Dynamisch, Spieler, TuerTeile, FensterTeile, Dreiecke, RohSegmente, Paare, Waende;
             public int Tueren, Fenster, TuerenAusserhalb;
             public double Ms;
+            // Scan
+            public long Strahlen, Treffer, Abbrueche;
+            public int Linien, ZellenW, ZellenH, Slots;
+            public double MsStrahlen, Bilder;
+            public KartenScan.Zahlen Scan;
         }
 
         // ------------------------------------------------------------------ Ablauf
@@ -99,6 +119,7 @@ namespace Materialklang
             Vector3 pos = Vector3.zero;
             bool ok = false;
             IEnumerator innen = null;
+            ScanAuftrag scan = null;
             try
             {
                 var gw = Singleton<GameWorld>.Instance;
@@ -109,9 +130,19 @@ namespace Materialklang
                         (int)LayersMaskController.HighPolyWithTerrainMask, QueryTriggerInteraction.Ignore))
                     boden = hit.point.y;
                 sliceY = boden + Hoehe.Value;
-                innen = Sammeln(pos, sliceY, z, roh, oeff, bild);
-                Plugin.Log.LogInfo($"Map export: {karte}, cut at y = {sliceY:F2} m ({Hoehe.Value:F2} m above {(AbFuessen.Value ? "your feet" : "the ground")}), " +
-                                   (Radius.Value > 0f ? $"+-{Radius.Value:F0} m around you" : "whole map") + " ...");
+                if (Art.Value == Methode.Scan)
+                {
+                    scan = new ScanAuftrag();
+                    innen = ScanSammeln(pos, sliceY, z, scan, oeff, bild);
+                    Plugin.Log.LogInfo($"Map export (scan): {karte}, cut at y = {sliceY:F2} m ({Hoehe.Value:F2} m above {(AbFuessen.Value ? "your feet" : "the ground")}), " +
+                                       (ScanRadius.Value > 0f ? $"+-{ScanRadius.Value:F0} m around you" : "map bounds") + $", grid {ScanRaster.Value:F2} m ...");
+                }
+                else
+                {
+                    innen = Sammeln(pos, sliceY, z, roh, oeff, bild);
+                    Plugin.Log.LogInfo($"Map export (mesh): {karte}, cut at y = {sliceY:F2} m ({Hoehe.Value:F2} m above {(AbFuessen.Value ? "your feet" : "the ground")}), " +
+                                       (Radius.Value > 0f ? $"+-{Radius.Value:F0} m around you" : "whole map") + " ...");
+                }
             }
             catch (Exception e) { Plugin.Log.LogError("Map export failed: " + e); laeuft = false; Ton(EFT.UI.EUISoundType.ErrorMessage); yield break; }
 
@@ -131,14 +162,20 @@ namespace Materialklang
                 // Zusammenfassen + JSON im Hintergrundfaden (reine Rechnung, bei vielen Mesh-Stuecken > 1 s)
                 string json = null; List<Seg> waende = null; Exception fehler = null; long msMerge = 0;
                 z.Ms = uhr.Elapsed.TotalMilliseconds;
-                var zz = z; string kk = karte; float sy = sliceY, bo = boden; Vector3 pp = pos; float hh = Hoehe.Value;
+                var zz = z; string kk = karte; float sy = sliceY, bo = boden; Vector3 pp = pos; float hh = Hoehe.Value; var sc = scan;
                 string[] namen = Enum.GetNames(typeof(Gruppe));
                 var task = System.Threading.Tasks.Task.Run(() =>
                 {
                     try
                     {
                         var t0 = Stopwatch.StartNew();
-                        waende = KartenSchnitt.Zusammenfassen(roh, out zz.Paare);
+                        if (sc != null)
+                        {
+                            zz.Scan = sc.Zahlen;
+                            waende = KartenScan.Auswerten(sc.Raster, sc.SlotMat, sc.SlotDicke, sc.Oeffnungen, sc.Zahlen, KartenSchnitt.DuennGrenze, (int)Gruppe.Unknown);
+                            sc.Raster = null;
+                        }
+                        else waende = KartenSchnitt.Zusammenfassen(roh, out zz.Paare);
                         zz.Waende = waende.Count;
                         msMerge = t0.ElapsedMilliseconds;
                         json = Json(kk, sy, hh, bo, pp, waende, oeff, namen, zz);
@@ -154,11 +191,22 @@ namespace Materialklang
                     datei = Path.Combine(dir, KartenSchnitt.Dateiname(karte, Hoehe.Value));
                     File.WriteAllText(datei, json, new UTF8Encoding(false));
                     ok = true;
+                    if (scan != null)
+                    {
+                        var q = z.Scan;
+                        Plugin.Log.LogInfo($"Map export (scan): {z.Waende} walls ({q.Kanten} outline pieces of thick parts in {q.Umrisse} outlines, {q.Mitten} centre-line pieces of thin walls in {q.Linien} lines), " +
+                                           $"{z.Tueren} doors, {z.Fenster} windows; grid {z.ZellenW} x {z.ZellenH} cells, {q.FesteZellen} solid ({q.DickeZellen} thick, {q.DuenneZellen} thin, skeleton {q.Skelett}, " +
+                                           $"{q.AesteWeg} spurs removed, {q.OeffnungZellen} cleared in openings); {z.Linien} lines, {z.Strahlen} casts, {z.Treffer} hits ({q.Paare} entry/exit pairs, {q.Einzel} single surfaces), " +
+                                           $"{z.Slots} colliders (left out: moving {z.Dynamisch}, players/bots {z.Spieler}, door parts {z.TuerTeile}, window parts {z.FensterTeile}), " +
+                                           $"{(z.Abbrueche > 0 ? z.Abbrueche + " lines stopped at the hit limit, " : "")}casting {z.MsStrahlen / 1000.0:F1} s main thread over {z.Bilder:F0} frames, " +
+                                           $"{uhr.Elapsed.TotalSeconds:F1} s total (contours {msMerge} ms, off the main thread) -> {datei} ({new FileInfo(datei).Length / 1024} KB)");
+                    }
+                    else
                     Plugin.Log.LogInfo($"Map export: {z.Waende} walls (from {z.RohSegmente} raw pieces, {z.Paare} face pairs joined), {z.Tueren} doors, {z.Fenster} windows; " +
                                        $"{z.Collider} colliders (box {z.Quader}, mesh {z.Mesh}, unreadable mesh {z.MeshNichtLesbar} = bounds rectangle, sphere {z.Kugel}, capsule {z.Kapsel}; " +
                                        $"left out: terrain {z.Terrain}, moving {z.Dynamisch}, players/bots {z.Spieler}, door parts {z.TuerTeile}, window parts {z.FensterTeile}), " +
                                        $"{z.Dreiecke} triangles cut, {uhr.Elapsed.TotalSeconds:F1} s (merge {msMerge} ms, off the main thread) -> {datei}");
-                    if (z.MeshNichtLesbar > 0)
+                    if (scan == null && z.MeshNichtLesbar > 0)
                         Plugin.Log.LogWarning($"Map export: {z.MeshNichtLesbar} mesh colliders are not readable; they are exported as their bounds rectangle (\"approx\":1).");
                 }
                 catch (Exception e) { Plugin.Log.LogError("Map export failed: " + e); }
@@ -167,9 +215,180 @@ namespace Materialklang
             Ton(ok ? EFT.UI.EUISoundType.QuestSubTrackComplete : EFT.UI.EUISoundType.ErrorMessage);
         }
 
-        // ------------------------------------------------------------------ Sammeln
+        // ------------------------------------------------------------------ Scan (0.8.5)
 
-        static IEnumerator Sammeln(Vector3 pos, float y, Zahlen z, List<Seg> roh, List<string> oeff, Stopwatch bild)
+        sealed class ScanAuftrag
+        {
+            public ScanRaster Raster;
+            public readonly List<int> SlotMat = new List<int>(4096);
+            public readonly List<float> SlotDicke = new List<float>(4096);
+            public readonly List<(P2 a, P2 b)> Oeffnungen = new List<(P2 a, P2 b)>(512);
+            public readonly KartenScan.Zahlen Zahlen = new KartenScan.Zahlen();
+        }
+
+        struct Strahl { public int Linie; public bool Rueck; public float T; public int Treffer; }
+
+        const int MaxZellen = 3200;          // je Seite (Speicher: 5 Byte je Zelle + ~6 Byte waehrend der Auswertung)
+        const int MaxBatch = 16384;
+        const float Schritt = 0.005f;        // hinter einem Treffer weiter (m)
+        const int MaxTrefferJeStrahl = 20000;
+
+        static IEnumerator ScanSammeln(Vector3 pos, float y, Zahlen z, ScanAuftrag auf, List<string> oeff, Stopwatch bild)
+        {
+            int maske = Maske();
+            float res = ScanRaster.Value, r = ScanRadius.Value;
+            float x0, x1, z0, z1;
+            if (r > 0f) { x0 = pos.x - r; x1 = pos.x + r; z0 = pos.z - r; z1 = pos.z + r; }
+            else
+            {
+                x0 = z0 = float.MaxValue; x1 = z1 = float.MinValue;
+                foreach (var t in UnityEngine.Object.FindObjectsOfType<TerrainCollider>())
+                {
+                    if (t == null) continue;
+                    var tb = t.bounds;
+                    x0 = Mathf.Min(x0, tb.min.x); z0 = Mathf.Min(z0, tb.min.z); x1 = Mathf.Max(x1, tb.max.x); z1 = Mathf.Max(z1, tb.max.z);
+                }
+                if (x0 > x1) { x0 = pos.x - GanzeKarte; x1 = pos.x + GanzeKarte; z0 = pos.z - GanzeKarte; z1 = pos.z + GanzeKarte; }
+            }
+            // auf MaxZellen je Seite um den Spieler begrenzen
+            float halb = MaxZellen * res * 0.5f;
+            bool gekappt = false;
+            if (x1 - x0 > 2 * halb) { x0 = Mathf.Max(x0, Mathf.Min(pos.x, x1 - halb) - halb); x1 = x0 + 2 * halb; gekappt = true; }
+            if (z1 - z0 > 2 * halb) { z0 = Mathf.Max(z0, Mathf.Min(pos.z, z1 - halb) - halb); z1 = z0 + 2 * halb; gekappt = true; }
+            int W = Mathf.Max(1, Mathf.CeilToInt((x1 - x0) / res)), H = Mathf.Max(1, Mathf.CeilToInt((z1 - z0) / res));
+            if (gekappt) Plugin.Log.LogWarning($"Map export (scan): area limited to {MaxZellen} cells per side around you ({2 * halb:F0} m at {res:F2} m).");
+            auf.Raster = new ScanRaster(W, H, x0, z0, res);
+            z.ZellenW = W; z.ZellenH = H; z.Linien = W + H;
+            float lx = W * res, lz = H * res;
+            Plugin.Log.LogInfo($"Map export (scan): x {x0:F0}..{x0 + lx:F0}, z {z0:F0}..{z0 + lz:F0} m, {W} x {H} cells, {H} + {W} lines, each cast forwards and backwards ...");
+
+            // Strahlen: Linie 0..H-1 = x-Linien (Zeile k), H..H+W-1 = z-Linien (Spalte k-H)
+            int linien = W + H;
+            var offen = new int[linien];          // offene Richtungen je Linie (2 -> 0: fertig)
+            var ev = new List<ScanTreffer>[linien];
+            var aktiv = new Strahl[2 * linien];
+            int nAktiv = 0;
+            for (int k = 0; k < linien; k++)
+            {
+                offen[k] = 2;
+                aktiv[nAktiv++] = new Strahl { Linie = k, Rueck = false };
+                aktiv[nAktiv++] = new Strahl { Linie = k, Rueck = true };
+            }
+            var klasse = new Dictionary<int, int>(8192);   // Collider-Id -> Slot (-1 = weglassen)
+            float schale = WandZwischenRaeumen.Schale != null ? WandZwischenRaeumen.Schale.Value : 0.15f;
+            var qp = new QueryParameters(maske, false, QueryTriggerInteraction.Ignore, false);
+            var cmds = new NativeArray<RaycastCommand>(MaxBatch, Allocator.Persistent);
+            var hits = new NativeArray<RaycastHit>(MaxBatch, Allocator.Persistent);
+            var batch = new Strahl[MaxBatch];
+            int groesse = 1024, fertigeLinien = 0;
+            var guss = new Stopwatch();
+            float naechsteMeldung = Time.realtimeSinceStartup + 2f;
+            try
+            {
+                while (nAktiv > 0)
+                {
+                    if (bild.Elapsed.TotalMilliseconds > BudgetMs)
+                    {
+                        z.Bilder++;
+                        if (Time.realtimeSinceStartup >= naechsteMeldung)
+                        {
+                            naechsteMeldung = Time.realtimeSinceStartup + 2f;
+                            Plugin.Log.LogInfo($"Map export (scan): {fertigeLinien}/{linien} lines, {z.Strahlen} casts, {z.Treffer} hits, {nAktiv} rays running ...");
+                        }
+                        yield return null;
+                        continue;
+                    }
+                    int n = Math.Min(groesse, nAktiv);
+                    for (int i = 0; i < n; i++)
+                    {
+                        var st = aktiv[--nAktiv];
+                        batch[i] = st;
+                        bool xl = st.Linie < H;
+                        int k = xl ? st.Linie : st.Linie - H;
+                        float len = xl ? lx : lz;
+                        Vector3 dir = xl ? Vector3.right : Vector3.forward;
+                        Vector3 a = xl ? new Vector3(x0, y, z0 + (k + 0.5f) * res) : new Vector3(x0 + (k + 0.5f) * res, y, z0);
+                        Vector3 von = st.Rueck ? a + dir * (len - st.T) : a + dir * st.T;
+                        cmds[i] = new RaycastCommand(von, st.Rueck ? -dir : dir, qp, Mathf.Max(0.001f, len - st.T));
+                    }
+                    guss.Restart();
+                    var job = RaycastCommand.ScheduleBatch(cmds.GetSubArray(0, n), hits.GetSubArray(0, n), 64, 1);
+                    job.Complete();    // im selben Bild fertig: keine Abfrage laeuft in die naechste Physik-Rechnung hinein
+                    z.Strahlen += n;
+                    for (int i = 0; i < n; i++)
+                    {
+                        var st = batch[i];
+                        var h = hits[i];
+                        int id = h.colliderInstanceID;
+                        bool xl = st.Linie < H;
+                        float len = xl ? lx : lz;
+                        if (id == 0) { LinieFertig(auf, offen, ev, st.Linie, H, z, ref fertigeLinien); continue; }
+                        z.Treffer++;
+                        if (!klasse.TryGetValue(id, out int slot)) { slot = Klassifizieren(h.collider, schale, z, auf); klasse[id] = slot; }
+                        float t = st.T + h.distance;
+                        if (slot >= 0)
+                        {
+                            Vector3 dir = xl ? Vector3.right : Vector3.forward;
+                            float cos = Mathf.Abs(Vector3.Dot(h.normal, dir));
+                            (ev[st.Linie] ??= new List<ScanTreffer>(64)).Add(new ScanTreffer(st.Rueck ? len - t : t, slot, !st.Rueck, cos));
+                        }
+                        st.T = t + Schritt;
+                        st.Treffer++;
+                        if (st.T >= len || st.Treffer >= MaxTrefferJeStrahl)
+                        {
+                            if (st.Treffer >= MaxTrefferJeStrahl) z.Abbrueche++;
+                            LinieFertig(auf, offen, ev, st.Linie, H, z, ref fertigeLinien);
+                            continue;
+                        }
+                        aktiv[nAktiv++] = st;
+                    }
+                    guss.Stop();
+                    z.MsStrahlen += guss.Elapsed.TotalMilliseconds;
+                    // Stapelgroesse an das Bildbudget anpassen (Arbeitsfaeden + Auswertung im Hauptfaden)
+                    double proStrahl = guss.Elapsed.TotalMilliseconds / n;
+                    int ziel = (int)Math.Max(256, Math.Min(MaxBatch, BudgetMs * 0.5 / Math.Max(proStrahl, 1e-5)));
+                    groesse = ziel;
+                }
+            }
+            finally
+            {
+                cmds.Dispose(); hits.Dispose();
+            }
+            z.Slots = auf.SlotMat.Count;
+            Plugin.Log.LogInfo($"Map export (scan): {z.Strahlen} casts, {z.Treffer} hits, {z.Slots} colliders, {z.MsStrahlen / 1000.0:F1} s casting; outlines next ...");
+            yield return null;
+            try { Oeffnungen(pos, y, x0, x0 + lx, z0, z0 + lz, z, oeff, auf.Oeffnungen); }
+            catch (Exception e) { Statistik.Fehler(e); }
+        }
+
+        static void LinieFertig(ScanAuftrag auf, int[] offen, List<ScanTreffer>[] ev, int linie, int H, Zahlen z, ref int fertig)
+        {
+            if (--offen[linie] > 0) return;
+            bool xl = linie < H;
+            KartenScan.LinieEintragen(auf.Raster, xl, xl ? linie : linie - H, ev[linie], auf.SlotDicke, auf.Zahlen);
+            ev[linie] = null;
+            fertig++;
+        }
+
+        /// <summary>Wie beim Mesh-Schnitt: Trigger, bewegliche Teile, Spieler/Bots, lose Gegenstaende, Tueren und Fenster weglassen
+        /// (Strahl laeuft hindurch); sonst neuer Slot mit Material und Gruppendicke.</summary>
+        static int Klassifizieren(Collider c, float schale, Zahlen z, ScanAuftrag auf)
+        {
+            if (c == null || c is TerrainCollider || c.isTrigger) return -1;
+            var rb = c.attachedRigidbody;
+            if (rb != null && !rb.isKinematic) { z.Dynamisch++; return -1; }
+            if (c.GetComponentInParent<Player>() != null) { z.Spieler++; return -1; }
+            if (c.GetComponentInParent<LootItem>() != null) { z.Dynamisch++; return -1; }
+            if (c.GetComponentInParent<Door>() != null) { z.TuerTeile++; return -1; }
+            if (c.GetComponentInParent<WindowBreaker>() != null) { z.FensterTeile++; return -1; }
+            if (auf.SlotMat.Count >= 65534) return auf.SlotMat.Count - 1;
+            int mat = MaterialCache.Bestimmen(c, false);
+            auf.SlotMat.Add(mat);
+            auf.SlotDicke.Add(Bauakustik.EinzelDicke(mat, schale));
+            return auf.SlotMat.Count - 1;
+        }
+
+        static int Maske()
         {
             // Ebenen wie die Schallstrahlen (Plugin.cs: Statistik.AudioMaske; vor dem ersten Klang: HighPolyCollider + Terrain), ohne
             // Terrain, Spieler, Leichen und Trefferzonen.
@@ -179,6 +398,14 @@ namespace Materialklang
             maske &= ~(int)LayersMaskController.PlayerMask;
             if (LayersMaskController.DeadbodyLayer >= 0) maske &= ~(1 << LayersMaskController.DeadbodyLayer);
             if (LayersMaskController.HitColliderLayer >= 0) maske &= ~(1 << LayersMaskController.HitColliderLayer);
+            return maske;
+        }
+
+        // ------------------------------------------------------------------ Sammeln
+
+        static IEnumerator Sammeln(Vector3 pos, float y, Zahlen z, List<Seg> roh, List<string> oeff, Stopwatch bild)
+        {
+            int maske = Maske();
 
             // Gebiet
             float r = Radius.Value;
@@ -342,7 +569,7 @@ namespace Materialklang
 
         // ------------------------------------------------------------------ Tueren / Fenster
 
-        static void Oeffnungen(Vector3 pos, float y, float x0, float x1, float z0, float z1, Zahlen z, List<string> aus)
+        static void Oeffnungen(Vector3 pos, float y, float x0, float x1, float z0, float z1, Zahlen z, List<string> aus, List<(P2 a, P2 b)> linien = null)
         {
             var gw = Singleton<GameWorld>.Instance;
             // Tueren: wie TuerenFenster.FindeTuer aus dem Verzeichnis der interaktiven Objekte; fehlt es, alle Door-Objekte der Szene
@@ -370,6 +597,7 @@ namespace Materialklang
                 if (!KartenSchnitt.Oeffnung(P(c), P(ex), P(ey), P(ez), out var a, out var b, out _)) continue;
                 string zustand = d.IsBroken ? "broken" : d.DoorState == EDoorState.Open ? "open" : "closed";
                 aus.Add(Eintrag("door", a, b, zustand, TuerBlatt(d)));
+                linien?.Add((a, b));
                 z.Tueren++;
             }
 
@@ -384,6 +612,7 @@ namespace Materialklang
                     if (!ImSchnitt(col, c, ex, ey, ez, y, x0, x1, z0, z1)) continue;
                     if (!KartenSchnitt.Oeffnung(P(c), P(ex), P(ey), P(ez), out var a, out var b, out _)) continue;
                     aus.Add(Eintrag("window", a, b, (w.IsDamaged || w.BrakeByDefault) ? "broken" : "closed", nameof(Gruppe.Glass)));
+                    linien?.Add((a, b));
                     z.Fenster++;
                 }
         }
@@ -467,6 +696,19 @@ namespace Materialklang
             {
                 minX = Math.Min(minX, Math.Min(s.AX, s.BX)); maxX = Math.Max(maxX, Math.Max(s.AX, s.BX));
                 minZ = Math.Min(minZ, Math.Min(s.AZ, s.BZ)); maxZ = Math.Max(maxZ, Math.Max(s.AZ, s.BZ));
+            }
+            if (z.Scan != null)
+            {
+                var q = z.Scan;
+                return KartenJson.Schreiben(Plugin.Version, karte, sliceY, hoehe, boden, pos.x, pos.y, pos.z, minX, minZ, maxX, maxZ, waende, oeff, namen,
+                    new[]
+                    {
+                        ("walls", (double)z.Waende), ("outlinePieces", q.Kanten), ("centreLinePieces", q.Mitten), ("doors", z.Tueren), ("windows", z.Fenster),
+                        ("gridW", z.ZellenW), ("gridH", z.ZellenH), ("resolution", ScanRaster.Value), ("solidCells", q.FesteZellen), ("thickCells", q.DickeZellen),
+                        ("thinCells", q.DuenneZellen), ("lines", z.Linien), ("casts", z.Strahlen), ("hits", z.Treffer), ("pairs", q.Paare), ("singleSurfaces", q.Einzel),
+                        ("colliders", z.Slots), ("movingSkipped", z.Dynamisch), ("playersSkipped", z.Spieler), ("doorParts", z.TuerTeile), ("windowParts", z.FensterTeile),
+                        ("spursRemoved", q.AesteWeg), ("openingCellsCleared", q.OeffnungZellen), ("msCasting", Math.Round(z.MsStrahlen)), ("ms", Math.Round(z.Ms))
+                    });
             }
             return KartenJson.Schreiben(Plugin.Version, karte, sliceY, hoehe, boden, pos.x, pos.y, pos.z, minX, minZ, maxX, maxZ, waende, oeff, namen,
                 new[]
