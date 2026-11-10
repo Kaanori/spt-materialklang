@@ -23,7 +23,7 @@ bug, please open an [issue](https://github.com/Kaanori/spt-true-acoustics/issues
 
 ## Installation
 
-1. Download `Materialklang-0.8.5-beta.zip` from the [Releases](https://github.com/Kaanori/spt-true-acoustics/releases) page.
+1. Download `Materialklang-0.8.5.1.zip` from the [Releases](https://github.com/Kaanori/spt-true-acoustics/releases) page.
 2. Extract it **into your SPT game folder** (the folder that contains `EscapeFromTarkov.exe`).
    The ZIP already has the right layout; the mod ends up in `BepInEx/plugins/`.
    On Windows, make sure "Extract All" does not add an extra subfolder.

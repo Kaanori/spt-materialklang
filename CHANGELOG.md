@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.5.1
+
+Hotfix for 0.8.5-beta. Nothing else changed.
+
+- **Fixed: closed doors muted gunfire completely in local (single-player) raids.** True Acoustics looked the door objects up in a table that only exists in online games. In a local raid that table is missing, so no door was ever found (`doors 0` in the log), the door settings (section 4) never applied, and every closed door damped with the game's built-in maximum (45 dB, no gap around the leaf) – shots behind a closed door were inaudible. Doors are now looked up in the table the local game keeps (`GameWorld.TriggersModule`), so the door material setting applies as intended. A door whose object cannot be found, sits too far from its portal, or has an unknown material now uses the thin-wood value (`Door thin wood`, 0.35 = about 21 dB) instead of the game's 45 dB.
+- **Fixed: low-pass flutter ("robotic sound").** Whether the wall or the room path decides the low-pass was compared against the game's smoothed value, which lags behind; when the volume rose slightly the filter jumped back to the fixed curve (about 10 kHz) for single frames. The decision now uses the unsmoothed wall value (the same one the volume calculation uses).
+
 ## 0.8.5-beta
 
 - **New: wall damping for sources the game never occludes (section 17, `Wall damping for non-occluded sources`, on).** With the longer ranges of sections 15/17/18 a campfire, the Streets generator, the V-Ex taxi, the BTR or the train could be heard through whole buildings as loud as outdoors – these sources have no occluder in the game. Checked in the offline test and heard in a raid.

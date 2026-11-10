@@ -135,11 +135,15 @@ namespace Materialklang
             if (mw != null || sp.portalType == BaseSpatialAudioPortal.PortalType.Window) effekt = FensterHeil.Value;
             else
             {
-                WorldInteractiveObject tuer = FindeTuer(sp.DoorID);
-                if (tuer == null) return -1f;                      // Welt noch nicht bereit -> spaeter nochmal
-                if (!sp.IsPositionIdentical(tuer.transform.position)) return Merken(p.ID, -1f);
-                effekt = TuerWert(tuer);
-                if (effekt < 0f) { unbekannteTuer++; return Merken(p.ID, -1f); }
+                if (!FindeTuer(sp.DoorID, out var tuer)) return -1f;   // Welt noch nicht bereit -> spaeter nochmal
+                // 0.8.5.1: Tuer nicht im Verzeichnis, zu weit weg oder Material unbekannt -> Ersatzwert (duenne Holztuer) statt "Vanilla".
+                // Vanilla = geschlossene Tuer gleich Hoechstdaemmung (45 dB, fugenlos); eine Tuer mit Fugen schafft das nie (R hoechstens ~23 dB).
+                if (tuer == null || !sp.IsPositionIdentical(tuer.transform.position)) { unbekannteTuer++; effekt = HolzDuenn.Value; }
+                else
+                {
+                    effekt = TuerWert(tuer);
+                    if (effekt < 0f) { unbekannteTuer++; effekt = HolzDuenn.Value; }
+                }
             }
             return Merken(p.ID, Mathf.Clamp01(effekt / Mathf.Max(occ, 0.05f)));
         }
@@ -156,13 +160,30 @@ namespace Materialklang
             return (f.WallOcclusion + b.WallOcclusion) * 0.5f;
         }
 
-        static WorldInteractiveObject FindeTuer(string id)
+        /// <summary>
+        /// Tuer zur DoorID. false = Verzeichnis noch nicht da (spaeter nochmal), true = gesucht (d = null: keine Tuer mit dieser ID).
+        /// 0.8.5.1: bis 0.8.5 nur GameWorld.World._interactiveObjectsDictionary. Das World-Objekt (ClientWorld) legt aber nur das
+        /// Netzspiel an; im lokalen Raid (SPT, LocalGame) ist GameWorld.World null -> jede Tuer blieb "Welt noch nicht bereit", die
+        /// Anpassung griff nie und jede geschlossene Tuer daempfte pauschal mit Max. insulation (Log: "doors 0"). Das lokale Spiel
+        /// fuehrt dasselbe Verzeichnis im LocalClientTriggersModule (GameWorld.TriggersModule) -> TryFindInteractiveObject.
+        /// </summary>
+        static bool FindeTuer(string id, out WorldInteractiveObject d)
         {
-            if (string.IsNullOrEmpty(id) || !Singleton<GameWorld>.Instantiated) return null;
-            var w = Singleton<GameWorld>.Instance.World;       // FindDoor() wuerde bei Fehlschlag ins Log schreiben
-            if (w == null || w._interactiveObjectsDictionary == null) return null;
-            w._interactiveObjectsDictionary.TryGetValue(id, out var d);
-            return d;
+            d = null;
+            if (!Singleton<GameWorld>.Instantiated) return false;
+            var gw = Singleton<GameWorld>.Instance;
+            if (gw == null) return false;
+            var w = gw.World;                                   // Netzspiel (FindDoor() wuerde bei Fehlschlag ins Log schreiben)
+            if (w != null && w._interactiveObjectsDictionary != null)
+            {
+                if (!string.IsNullOrEmpty(id)) w._interactiveObjectsDictionary.TryGetValue(id, out d);
+                return true;
+            }
+            var tm = gw.TriggersModule;                         // lokales Spiel
+            if (tm == null) return false;
+            try { if (!string.IsNullOrEmpty(id)) tm.TryFindInteractiveObject(id, out d); }
+            catch (NullReferenceException) { d = null; return false; }   // Verzeichnis noch nicht gefuellt
+            return true;
         }
 
         // Zielwert einer Tuer nach Material des groessten BallisticCollider; -1 = unbekannt (-> Vanilla).

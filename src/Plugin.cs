@@ -29,7 +29,7 @@ namespace Materialklang
     [BepInDependency("red.soundenginebackport", BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
-        public const string Version = "0.8.5";
+        public const string Version = "0.8.5.1";
         internal static ManualLogSource Log;
         internal static Plugin Instanz;   // 0.8.4: fuer Coroutinen (Kartenexport)
         internal static ConfigEntry<bool> Aktiv;

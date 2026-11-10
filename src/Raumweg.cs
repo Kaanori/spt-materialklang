@@ -367,8 +367,12 @@ namespace Materialklang
             beugung = 22000f; wertungTuer = 0f;
             try
             {
-                var z = Gilt(occ, out _);
-                if (z == null || occ.PropagationEffect < z.Wertung - 1e-4f) return false;    // Wand zwischen Raeumen gewann
+                var z = Gilt(occ, out var pc);
+                if (z == null) return false;
+                // Wand zwischen Raeumen gewann? Aus dem UNGEGLAETTETEN Wand-Wert entscheiden (wie ScorePostfix: min(Route, Wand)).
+                // Bis 0.8.5: Vergleich mit occ.PropagationEffect - das ist der vom Spiel geglaettete Wert (Lerp); stieg die
+                // Wertung minimal, hinkte er hinterher und der Tiefpass sprang bildweise auf die Abbildung (~10 kHz) = Flattern.
+                if (WandZwischenRaeumen.WandFuer(pc, out float wand, out _, out _, out _) && wand < z.Wertung - 1e-4f) return false;
                 beugung = z.TiefpassBeugung; wertungTuer = z.WertungTuer;
                 return true;
             }
