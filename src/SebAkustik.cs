@@ -485,7 +485,7 @@ namespace Materialklang
             Version v = Chainloader.PluginInfos.TryGetValue("red.soundenginebackport", out var pi) ? pi.Metadata.Version : null;
             if (!SebSchutz.VersionPasst(v))
             {
-                Plugin.Log.LogWarning($"SEB add-on: Sound Engine Backport {v} found, Materialklang is built for 1.0.x -> weapon directivity and gunshot air absorption off (shots play as SEB intends).");
+                Plugin.Log.LogWarning($"SEB add-on: Sound Engine Backport {v} found, Materialklang is built for 1.0.x/1.1.x -> weapon directivity and gunshot air absorption off (shots play as SEB intends).");
                 return;
             }
             var fire = Ziel(AccessTools.TypeByName("SoundEngineBackport.LiveEngine.LiveWeaponSoundEngine"), "FireBullet");

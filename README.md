@@ -19,11 +19,11 @@ bug, please open an [issue](https://github.com/Kaanori/spt-true-acoustics/issues
 ## Requirements
 
 - SPT 4.1.6 (EFT 0.16.9). BepInEx ships with SPT.
-- Designed as an add-on for [Sound Engine Backport](https://github.com/RedTheFoxx/SPT-SEB) (SEB 1.0.3): recommended, but not required – without it only the weapon directivity and the air absorption of gunshots switch off, everything else keeps working. Optional: SAIN 4.5.1 (bot hearing, off by default). The reverb zones use the Meta XR Audio library that ships with the game.
+- Designed as an add-on for [Sound Engine Backport](https://github.com/RedTheFoxx/SPT-SEB) (SEB 1.0.x / 1.1.x): recommended, but not required – without it only the weapon directivity and the air absorption of gunshots switch off, everything else keeps working. Optional: SAIN 4.5.1 (bot hearing, off by default). The reverb zones use the Meta XR Audio library that ships with the game.
 
 ## Installation
 
-1. Download `Materialklang-0.8.5.1.zip` from the [Releases](https://github.com/Kaanori/spt-true-acoustics/releases) page.
+1. Download `Materialklang-0.8.5.2.zip` from the [Releases](https://github.com/Kaanori/spt-true-acoustics/releases) page.
 2. Extract it **into your SPT game folder** (the folder that contains `EscapeFromTarkov.exe`).
    The ZIP already has the right layout; the mod ends up in `BepInEx/plugins/`.
    On Windows, make sure "Extract All" does not add an extra subfolder.
@@ -70,7 +70,7 @@ Every part has its own **Enabled** switch in the F12 menu. Switch off everything
 | **Settings** | `BepInEx/config/kaan.materialklang.cfg` (F12 menu, English labels) |
 | **License** | MIT |
 
-- **Sound Engine Backport (SEB)** – *recommended, not required* (soft dependency). True Acoustics was built and tuned next to SEB 1.0.3. With an SEB version other than 1.0.x the SEB parts stay off (log warning), and if SEB changes something True Acoustics relies on, those parts switch themselves off for the session (log error) while shots keep playing normally. Without SEB, **weapon directivity** and the **air absorption of gunshots** switch off (the log says so); everything else (materials, doors, windows, walls, timbre, air absorption of other sounds, reverb) only touches the base game's own audio system. Running it *without* SEB has not been tested yet.
+- **Sound Engine Backport (SEB)** – *recommended, not required* (soft dependency). True Acoustics was built and tuned next to SEB 1.0.3 and checked against SEB 1.1.0 and 1.1.1 (since 0.8.5.2). With an SEB version other than 1.0.x or 1.1.x the SEB parts stay off (log warning), and if SEB changes something True Acoustics relies on, those parts switch themselves off for the session (log error) while shots keep playing normally. Without SEB, **weapon directivity** and the **air absorption of gunshots** switch off (the log says so); everything else (materials, doors, windows, walls, timbre, air absorption of other sounds, reverb) only touches the base game's own audio system. Running it *without* SEB has not been tested yet.
 - **SAIN** – optional, only for **bot hearing**, which is **off** by default. Tested with SAIN 4.5.1; with another version the log shows a warning. Without SAIN that section simply does nothing.
 - **Meta XR Audio** – not something you install: it is part of the game (`Meta.XR.Audio.dll`) and is what the game itself uses for room reverb. The reverb zones talk to it directly. If it is unavailable the zones are skipped and the rest keeps working.
 - It hooks into internal parts of the game's audio system, so a **game update can break parts of it**. Where a hook target is missing, True Acoustics logs a warning and that part stays vanilla.

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.5.2
+
+Compatibility update for Sound Engine Backport 1.1.x. Nothing else changed.
+
+- **Fixed: with Sound Engine Backport 1.1.0 / 1.1.1 the SEB parts of True Acoustics switched themselves off.** The version guard only accepted SEB 1.0.x, so after updating SEB the log said `Sound Engine Backport 1.1.x found, Materialklang is built for 1.0.x` and **weapon directivity** (section 7), the **air absorption of gunshots** and **Distance (SEB)** (section 13) stayed off; shots played as SEB alone plays them. SEB 1.1.0 and 1.1.1 were compared with 1.0.4 class by class: everything True Acoustics patches or reads is unchanged (1.1.0 adds ambient volume categories, 1.1.1 changes how legacy weapon sound banks are detected), and the mixer bundle is identical. The guard now accepts 1.0.x and 1.1.x.
+- Known limit: automatic weapons that SEB 1.1.1 routes to its legacy (V1) engine – mostly modded weapons with old-style sound banks – do not get weapon directivity and Distance (SEB) yet. Walls, doors, windows, timbre and reverb apply to them as before.
+
 ## 0.8.5.1
 
 Hotfix for 0.8.5-beta. Nothing else changed.

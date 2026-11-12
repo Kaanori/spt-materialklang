@@ -8,8 +8,9 @@ namespace Materialklang
     // MissingFieldException - bis 0.8.2 VOR dem try im Prefix von TryStartShot, der Schuss blieb stumm.
     internal static class SebSchutz
     {
-        /// <summary>Gebaut und geprueft gegen SEB 1.0.x (1.0.3). Andere Fassungen: SEB-Teile aus.</summary>
-        public static bool VersionPasst(Version v) => v != null && v.Major == 1 && v.Minor == 0;
+        /// <summary>Gebaut und geprueft gegen SEB 1.0.x (1.0.3) und 1.1.x (0.8.5.2: 1.1.0 und 1.1.1 per Dekompilat-Vergleich mit 1.0.4 - alle
+        /// gepatchten und gelesenen Typen/Methoden/Felder identisch; Build gegen 1.1.1 fehlerfrei). Andere Fassungen: SEB-Teile aus.</summary>
+        public static bool VersionPasst(Version v) => v != null && v.Major == 1 && (v.Minor == 0 || v.Minor == 1);
 
         /// <summary>Fehler, die eine geaenderte SEB-Fassung bedeuten (fehlendes Feld/Konstruktor/Typ) -> SEB-Teile abschalten.
         /// Alles andere (z. B. NullReference) wird nur gezaehlt.</summary>

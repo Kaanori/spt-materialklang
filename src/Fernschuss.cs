@@ -56,7 +56,7 @@ namespace Materialklang
             Aktiv = c.Bind(Sek, "Enabled", false,
                 "Distant gunshots carry further (deliberately less realistic): own volume curve beyond 25 m, longer audible range outdoors, " +
                 "suppressed shots no longer fade out at 55-100 m, flatter explosion curve. Nearby shots (up to 25 m) stay exactly as in Sound Engine Backport. " +
-                "Needs Sound Engine Backport 1.0.x. Gunshots: applies to the next shot; explosions: from the next raid.");
+                "Needs Sound Engine Backport 1.0.x or 1.1.x. Gunshots: applies to the next shot; explosions: from the next raid.");
             FernDb = c.Bind(Sek, "Far clip compensation (dB)", 4f,
                 new ConfigDescription("The far recordings of a weapon are 3.7-6.5 dB less dense than the mid ones (measured: AK-74M, AKM, TX-15, STM-9), " +
                     "so shots got a dip where the game blends to them (usually 55-100 m). This raises the far recording by this much, weighted with its share in the blend. 0 = off.",
@@ -82,7 +82,7 @@ namespace Materialklang
                 }
                 if (!SebSchutz.VersionPasst(pi.Metadata.Version))
                 {
-                    Plugin.Log.LogWarning($"Distance (SEB): Sound Engine Backport {pi.Metadata.Version} found, built for 1.0.x -> section 13 off.");
+                    Plugin.Log.LogWarning($"Distance (SEB): Sound Engine Backport {pi.Metadata.Version} found, built for 1.0.x/1.1.x -> section 13 off.");
                     return;
                 }
                 FernschussSeb.Anwenden(h);
